@@ -1,7 +1,20 @@
-# notes-editor
+# cairn
 
 A small browser editor for a folder of markdown notes. Two files, Python
 standard library only: no dependencies, no build step, no internet.
+
+![The cairn editor: note list on the left, markdown source in the middle, live preview on the right](docs/screenshot.png)
+
+The screenshot is the demo vault in `docs/demo-vault/` — nine invented notes,
+not anyone's real ones. You can run the editor against it yourself:
+
+```bash
+python3 notes-server.py --vault docs/demo-vault
+```
+
+It follows the system theme:
+
+![The same editor in dark mode, showing a weekly review note](docs/screenshot-dark.png)
 
 ## Run
 
@@ -62,3 +75,14 @@ notes use: headings, fenced code, inline code, bold/italic/strikethrough,
 links and bare URLs, `[[wikilinks]]` and `![[embeds]]`, bullet, numbered and
 task lists, tables, blockquotes, `> [!NOTE]` callouts, horizontal rules, and
 YAML frontmatter. Footnotes and nested blockquotes are not handled.
+
+`docs/demo-vault/2 - Resources/Markdown Reference.md` exercises most of it.
+
+## Tests
+
+```bash
+python3 tests/test_server.py
+```
+
+Checks over auth, reading, writing, path safety and TLS. Standard library
+only. It builds a throwaway vault in `/tmp` and never touches a real one.

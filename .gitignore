@@ -6,3 +6,6 @@ __pycache__/
 *.tmp-*
 *~
 .DS_Store
+
+# Local working notes for this repo, deliberately not shared.
+CLAUDE.md
