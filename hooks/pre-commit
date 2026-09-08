@@ -24,7 +24,10 @@ staged=$(git diff --cached --name-only --diff-filter=ACM)
 hits=0
 while IFS= read -r f; do
     [ -f "$f" ] || continue
-    # skip this hook itself, which necessarily contains the patterns
+    # Skip this hook itself. As written it does not actually match its own
+    # regexes, but it is the one file where spelling out a literal example
+    # token would be the natural thing to do — don't let the scan depend on
+    # nobody ever doing that.
     case "$f" in hooks/pre-commit) continue ;; esac
     if match=$(git show ":$f" 2>/dev/null | grep -nEI "$PATTERNS" | grep -vEi "$PLACEHOLDERS"); then
         if [ "$hits" -eq 0 ]; then
