@@ -71,6 +71,14 @@ EDITOR_HTML = os.path.join(HERE, "editor.html")
 VAULT = os.path.abspath(os.environ.get("NOTES_VAULT") or os.path.join(HERE, os.pardir))
 CERT_DIR = os.path.join(VAULT, ".certs")
 
+# The only non-hidden directory worth skipping. It is never notes, and a single
+# node_modules holds thousands of package README.md files — /api/notes ships
+# every note's full text in one payload, so walking it would bloat the response
+# enormously and bury the real notes. bin/ was on this list once too, for no
+# better reason than that this server used to live in the vault's bin/; that
+# silently hid real notes and is why the list is this short. Keep it that way.
+SKIP_DIRS = {"node_modules"}
+
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 MIME = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -116,12 +124,11 @@ def parse_frontmatter(text):
 def list_notes():
     out = []
     for root, dirs, files in os.walk(VAULT):
-        # Hidden directories are the whole skip rule: it covers this server's
-        # own .backups/, .trash/ and .certs/ as well as .git/ and .obsidian/.
-        # Nothing else is hidden from the vault — a folder named bin/ or
-        # node_modules/ used to be skipped here, which silently swallowed any
-        # notes inside it.
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        # Hidden directories cover this server's own .backups/, .trash/ and
+        # .certs/ as well as .git/ and .obsidian/. Beyond those, only
+        # SKIP_DIRS is hidden from the vault — see the note on it above.
+        dirs[:] = [d for d in dirs
+                   if not d.startswith(".") and d not in SKIP_DIRS]
         for f in sorted(files):
             if not f.endswith(".md"):
                 continue
@@ -156,7 +163,8 @@ def list_notes():
 def list_images():
     found = {}
     for root, dirs, files in os.walk(VAULT):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [d for d in dirs
+                   if not d.startswith(".") and d not in SKIP_DIRS]
         for f in files:
             if os.path.splitext(f)[1].lower() in IMAGE_EXT:
                 found.setdefault(f, os.path.relpath(os.path.join(root, f), VAULT))

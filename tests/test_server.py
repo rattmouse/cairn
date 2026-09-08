@@ -58,6 +58,11 @@ def make_vault():
     os.makedirs(os.path.join(d, ".backups"))
     with open(os.path.join(d, ".backups", "Old.md"), "w") as f:
         f.write("# Old\n\nA backup, not a note.\n")
+    # node_modules is the one non-hidden directory that stays skipped: a real
+    # one carries thousands of package READMEs into the /api/notes payload.
+    os.makedirs(os.path.join(d, "node_modules", "leftpad"))
+    with open(os.path.join(d, "node_modules", "leftpad", "README.md"), "w") as f:
+        f.write("# leftpad\n\nA package readme, not a note.\n")
     # 1x1 png
     png = bytes.fromhex(
         "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
@@ -176,6 +181,7 @@ def test_read(vault, port):
         check("a folder named bin is not skipped", "bin/Gamma.md" in
               [n["path"] for n in d["notes"]])
         check("hidden directories stay out of the listing", "Old" not in titles)
+        check("node_modules stays skipped", "leftpad" not in titles, titles)
         beta = next(n for n in d["notes"] if n["title"] == "Beta")
         check("note without frontmatter falls back to filename", beta["title"] == "Beta")
         alpha = next(n for n in d["notes"] if n["title"] == "Alpha")

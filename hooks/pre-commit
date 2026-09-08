@@ -6,7 +6,7 @@
 # secret is in git history, removing it means rewriting history — so the
 # cheap fix is to never let it in.
 #
-# Installed via: git config core.hooksPath bin/hooks
+# Installed via: git config core.hooksPath hooks
 # Bypass for one commit (think first): git commit --no-verify
 
 set -uo pipefail
@@ -25,7 +25,7 @@ hits=0
 while IFS= read -r f; do
     [ -f "$f" ] || continue
     # skip this hook itself, which necessarily contains the patterns
-    case "$f" in bin/hooks/pre-commit) continue ;; esac
+    case "$f" in hooks/pre-commit) continue ;; esac
     if match=$(git show ":$f" 2>/dev/null | grep -nEI "$PATTERNS" | grep -vEi "$PLACEHOLDERS"); then
         if [ "$hits" -eq 0 ]; then
             echo
