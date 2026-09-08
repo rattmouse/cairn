@@ -71,8 +71,6 @@ EDITOR_HTML = os.path.join(HERE, "editor.html")
 VAULT = os.path.abspath(os.environ.get("NOTES_VAULT") or os.path.join(HERE, os.pardir))
 CERT_DIR = os.path.join(VAULT, ".certs")
 
-SKIP_DIRS = {".obsidian", ".git", ".backups", ".trash", ".vscode", ".certs",
-             "bin", "node_modules"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 MIME = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -118,7 +116,12 @@ def parse_frontmatter(text):
 def list_notes():
     out = []
     for root, dirs, files in os.walk(VAULT):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        # Hidden directories are the whole skip rule: it covers this server's
+        # own .backups/, .trash/ and .certs/ as well as .git/ and .obsidian/.
+        # Nothing else is hidden from the vault — a folder named bin/ or
+        # node_modules/ used to be skipped here, which silently swallowed any
+        # notes inside it.
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in sorted(files):
             if not f.endswith(".md"):
                 continue
@@ -153,7 +156,7 @@ def list_notes():
 def list_images():
     found = {}
     for root, dirs, files in os.walk(VAULT):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
             if os.path.splitext(f)[1].lower() in IMAGE_EXT:
                 found.setdefault(f, os.path.relpath(os.path.join(root, f), VAULT))

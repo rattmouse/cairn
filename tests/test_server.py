@@ -50,6 +50,14 @@ def make_vault():
                 "# Alpha\n\nBody text.\n")
     with open(os.path.join(d, "Notes", "Beta.md"), "w") as f:
         f.write("# Beta\n\nNo frontmatter here.\n")
+    # bin/ was once in a hardcoded skip list, which silently hid real notes.
+    os.makedirs(os.path.join(d, "bin"))
+    with open(os.path.join(d, "bin", "Gamma.md"), "w") as f:
+        f.write("# Gamma\n\nIn a folder called bin.\n")
+    # ...while genuinely hidden directories must still stay out of the listing.
+    os.makedirs(os.path.join(d, ".backups"))
+    with open(os.path.join(d, ".backups", "Old.md"), "w") as f:
+        f.write("# Old\n\nA backup, not a note.\n")
     # 1x1 png
     png = bytes.fromhex(
         "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
@@ -164,7 +172,10 @@ def test_read(vault, port):
         s, b = call(op, base + "/api/notes")
         d = json.loads(b)
         titles = sorted(n["title"] for n in d["notes"])
-        check("lists every note", titles == ["Alpha", "Beta", "Readme"], titles)
+        check("lists every note", titles == ["Alpha", "Beta", "Gamma", "Readme"], titles)
+        check("a folder named bin is not skipped", "bin/Gamma.md" in
+              [n["path"] for n in d["notes"]])
+        check("hidden directories stay out of the listing", "Old" not in titles)
         beta = next(n for n in d["notes"] if n["title"] == "Beta")
         check("note without frontmatter falls back to filename", beta["title"] == "Beta")
         alpha = next(n for n in d["notes"] if n["title"] == "Alpha")
