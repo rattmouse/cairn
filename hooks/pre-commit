@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# Refuse to commit anything that looks like a credential.
+#
+# This vault has had a live GitHub token sitting in a note before. Once a
+# secret is in git history, removing it means rewriting history — so the
+# cheap fix is to never let it in.
+#
+# Installed via: git config core.hooksPath bin/hooks
+# Bypass for one commit (think first): git commit --no-verify
+
+set -uo pipefail
+
+PATTERNS='(ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{32,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|password\s*=\s*["'"'"'][^"'"'"']{6,}|psk\s*=\s*["'"'"'][^"'"'"']{6,})'
+
+# Values that are obviously not real credentials. Redacted notes and example
+# config would otherwise trip the scan on every commit, and a hook that cries
+# wolf is a hook people start bypassing.
+PLACEHOLDERS='(REDACTED|CHANGEME|CHANGE_ME|EXAMPLE|PLACEHOLDER|YOUR[_-]?(TOKEN|KEY|PASSWORD)|xxxx+|<[^>]+>|\$\{?[A-Z_]+\}?)'
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+hits=0
+while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    # skip this hook itself, which necessarily contains the patterns
+    case "$f" in bin/hooks/pre-commit) continue ;; esac
+    if match=$(git show ":$f" 2>/dev/null | grep -nEI "$PATTERNS" | grep -vEi "$PLACEHOLDERS"); then
+        if [ "$hits" -eq 0 ]; then
+            echo
+            echo "  COMMIT BLOCKED — something credential-shaped is staged:"
+            echo
+        fi
+        hits=1
+        while IFS= read -r line; do
+            echo "    $f:${line%%:*}"
+        done <<< "$match"
+    fi
+done <<< "$staged"
+
+if [ "$hits" -ne 0 ]; then
+    cat <<'MSG'
+
+  Remove or redact it, then stage again.
+  If it is genuinely a false positive:  git commit --no-verify
+
+MSG
+    exit 1
+fi
+exit 0
