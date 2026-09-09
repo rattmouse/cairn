@@ -649,6 +649,8 @@ def test_status(vault, port):
         check("/api/status answers", code == 200, code)
         check("it carries all three sections",
               all(k in st for k in ("sync", "git", "cloud")))
+        check("and the version the page shows in its footer",
+              re.match(r"^\d+\.\d+\.\d+$", st.get("version") or ""), st.get("version"))
         # The temp vault is not a repository and not in anyone's sync folder.
         # Both are "no", and saying so is the point -- a missing key would
         # leave the footer unable to tell absent from broken.

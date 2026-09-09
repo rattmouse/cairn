@@ -3,10 +3,7 @@
 A small browser editor for a folder of markdown notes. Two files, Python
 standard library only: no dependencies, no build step, no internet.
 
-![The cairn editor: note list on the left, markdown source in the middle, live preview on the right](docs/screenshot.png)
-
-> The two screenshots below predate the tree, the outline panel and the
-> footer. They still show the middle of the window accurately.
+![The cairn editor: the vault as a tree on the left, markdown source and live preview in the middle, an outline of the note on the right, and a sync footer along the bottom](docs/screenshot.png)
 
 The screenshot is the demo vault in `docs/demo-vault/` — nine invented notes,
 not anyone's real ones. You can run the editor against it yourself:
@@ -15,9 +12,10 @@ not anyone's real ones. You can run the editor against it yourself:
 python3 notes-server.py --vault docs/demo-vault
 ```
 
-It follows the system theme:
+It follows the system theme. Here it is in dark, in **live** mode — the note
+is rendered except for the block the caret is in, which shows its markdown:
 
-![The same editor in dark mode, showing a weekly review note](docs/screenshot-dark.png)
+![The same editor in dark mode, in live mode: the note reads as the preview does, except for one callout block showing its raw markdown](docs/screenshot-dark.png)
 
 ## Run
 
@@ -25,8 +23,8 @@ It follows the system theme:
 python3 notes-server.py --vault ~/Documents/notes
 ```
 
-Opens on `127.0.0.1:8765`. Edit on the left, live preview on the right,
-`Ctrl-S` saves straight to the `.md` file on disk.
+Opens on `127.0.0.1:8765`. Markdown source on the left, rendered on the
+right, `Ctrl-S` saves straight to the `.md` file on disk.
 
 ## The window
 
@@ -35,10 +33,34 @@ Four parts, three of which you can put away:
 | Part | What's in it | Toggle |
 | --- | --- | --- |
 | Left | The vault as a tree. Folders come from the note paths, remember whether they were shut, and open themselves when you follow a link into one. Search flattens nothing — it filters and opens everything that matched. | `Ctrl/⌘-B` |
-| Middle | Source, preview, or both. | — |
+| Middle | Source, preview, both, or **live** — see below. | — |
 | Right | An outline of the open note: its headings, one entry per fenced code block, and every link it contains at the bottom. Built from the text as you type. Clicking an entry moves the preview *and* the caret to that line; scrolling the preview moves the highlight. | `Ctrl/⌘-E` |
 | Bottom | Sync status, always on. Left to right: the provider folder the vault is in, the git repository, and the sync command. | — |
 | Activity | Inside the footer: every line of every command cairn has run, as it runs. | `Ctrl/⌘-J` |
+
+## Live mode
+
+The fourth button in the middle. The note reads exactly as the preview does,
+one rendered block at a time, until the caret lands in a block — that one
+shows its markdown instead, tinted, with a bar in the margin. So the raw text
+is only ever where you are working, and the rest of the note stays readable
+while you work on it.
+
+Click anywhere in the note to edit there; the caret lands roughly where you
+clicked, not at the start of the block. `Escape` closes the block back to
+rendered. Arrow off the top or the bottom of a block and the next one opens,
+so the caret walks the note the way it would in a plain editor. The outline on
+the right opens blocks too.
+
+Block, not line: a paragraph is three lines that render as one thing, and
+there is no half-rendered paragraph to put a raw line inside. List items are
+cut one per block though, so fixing one bullet does not turn the whole list
+into source.
+
+There is still only one copy of the text. The block being edited splices its
+own lines back into the same textarea the other modes use, so saving, the
+conflict check, the outline and `Ctrl-S` all carry on reading the note they
+always did — and switching modes mid-edit keeps everything you typed.
 
 ## The footer
 
@@ -182,6 +204,16 @@ without invalidating anything.
 - Paths are resolved against the vault root; only `.md` files can be written.
 - Opening a terminal is refused for anything but a browser on this machine,
   and it types the command rather than running it.
+
+## Versions
+
+`python3 notes-server.py --version`, and the footer's left-hand corner says
+the same thing. Not a release process — a number that moves when the editor
+does, so a screenshot, a bug report and a running server can be talked about
+as the same thing.
+
+- **0.2** — the tree, the outline, the footer, live mode.
+- **0.1** — the three-pane editor.
 
 ## What it is not
 

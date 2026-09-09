@@ -106,6 +106,12 @@ MIME = {
     ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
 }
 
+# Not a release process, just a number that moves when the editor does, so a
+# screenshot, a bug report and a running server can be talked about as the
+# same thing. 0.1 was the three-pane editor; 0.2 grew the tree, the outline,
+# the footer and live mode.
+VERSION = "0.2.0"
+
 TOKEN = secrets.token_urlsafe(24)
 COOKIE = "notes_session"
 
@@ -1050,7 +1056,7 @@ INSECURE_WARN = ('<div class="warn">This connection is plain HTTP. Anyone else o
 # --------------------------------------------------------------------------
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "notes-server"
+    server_version = "cairn/" + VERSION
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -1178,7 +1184,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # the git repository, and the provider folder the vault is in.
             if not self.authed():
                 return self.fail(403, "not unlocked")
-            return self.send_json(200, {"ok": True, "sync": sync_status(),
+            return self.send_json(200, {"ok": True, "version": VERSION,
+                                        "sync": sync_status(),
                                         "git": git_info(), "cloud": cloud_info()})
 
         if path == "/api/run/log":
@@ -1357,6 +1364,7 @@ def main():
                     help="where backups/, trash/ and certs/ go (default: a "
                          "per-vault directory under $XDG_STATE_HOME/cairn, "
                          "i.e. ~/.local/state/cairn/vaults/<name>-<hash>)")
+    ap.add_argument("--version", action="version", version="cairn " + VERSION)
     ap.add_argument("--sync-cmd", default=None,
                     help="script the Sync button runs, with no arguments and no "
                          "shell (default: no button, and /api/sync is a 404)")
@@ -1439,7 +1447,7 @@ def main():
 
     local = "%s://127.0.0.1:%d/?token=%s" % (scheme, args.port, TOKEN)
 
-    print("\n  Notes editor")
+    print("\n  cairn %s" % VERSION)
     print("  vault : %s" % VAULT)
     print("  notes : %d" % len(list_notes()))
     print("  state : %s" % STATE_DIR)
