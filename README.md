@@ -12,8 +12,10 @@ not anyone's real ones. You can run the editor against it yourself:
 python3 notes-server.py --vault docs/demo-vault
 ```
 
-It follows the system theme. Here it is in dark, in **live** mode — the note
-is rendered except for the block the caret is in, which shows its markdown:
+It follows the system theme, and the button beside the wordmark overrides it
+when the machine is set the other way. Here it is in dark, in **live** mode —
+the note is rendered except for the block the caret is in, which shows its
+markdown:
 
 ![The same editor in dark mode, in live mode: the note reads as the preview does, except for one callout block showing its raw markdown](docs/screenshot-dark.png)
 
@@ -26,6 +28,31 @@ python3 notes-server.py --vault ~/Documents/notes
 Opens on `127.0.0.1:8765`. Markdown source on the left, rendered on the
 right, `Ctrl-S` saves straight to the `.md` file on disk.
 
+Reachable from another machine on the same network:
+
+```bash
+python3 notes-server.py --vault ~/Documents/notes --lan --tls
+```
+
+`--lan` accepts outside connections; `--tls` encrypts them with a
+self-signed certificate. Use them together — without `--tls` the notes and
+the login token cross the network in the clear.
+
+| Flag | Meaning |
+| --- | --- |
+| `--vault PATH` | Which notes folder to serve. Also read from `$NOTES_VAULT`. |
+| `--lan` | Accept connections from other devices. Off by default. |
+| `--tls` | Encrypt with a self-signed cert, kept in the state directory. |
+| `--host ADDR` | Bind a specific address instead of `--lan`'s `0.0.0.0`. |
+| `--port N` | Default 8765. |
+| `--state-dir PATH` | Where backups, trash and the TLS cert go. Default: a per-vault folder under `~/.local/state/cairn/vaults/`. |
+| `--new-token` | Discard the saved token and issue a new one, logging out every device. |
+| `--no-browser` | Don't open a browser on start. |
+| `--terminal-cwd PATH` | Where "open in terminal" starts. Default `~/workspace`. |
+| `--no-terminal` | Never open a terminal window. |
+| `--sync-cmd PATH` | An executable to run when you press Sync now. Without it there is no button and `/api/sync` is a 404. |
+| `--sync-timer UNIT` | A systemd `--user` timer to read the next scheduled sync from, e.g. `vault-sync.timer`. |
+
 ## The window
 
 Four parts, three of which you can put away:
@@ -33,7 +60,7 @@ Four parts, three of which you can put away:
 | Part | What's in it | Toggle |
 | --- | --- | --- |
 | Left | The vault as a tree. Folders come from the note paths, remember whether they were shut, and open themselves when you follow a link into one. Search flattens nothing — it filters and opens everything that matched. | `Ctrl/⌘-B` |
-| Middle | Source, preview, both, or **live** — see below. | — |
+| Middle | Source, preview, both, or **live** — see below. `Ctrl/⌘-\` cycles them. | — |
 | Right | An outline of the open note: its headings, one entry per fenced code block, and every link it contains at the bottom. Built from the text as you type. Clicking an entry moves the preview *and* the caret to that line; scrolling the preview moves the highlight. | `Ctrl/⌘-E` |
 | Bottom | Sync status, always on. Left to right: the provider folder the vault is in, the git repository, and the sync command. | — |
 | Activity | Inside the footer: every line of every command cairn has run, as it runs. | `Ctrl/⌘-J` |
@@ -98,30 +125,6 @@ finishes, so a slow sync shows you where it has got to. Opening a terminal
 from a code block leaves a line here too. It is this process's own record and
 lives in memory: restarting the server empties it.
 
-Reachable from another machine on the same network:
-
-```bash
-python3 notes-server.py --vault ~/Documents/notes --lan --tls
-```
-
-`--lan` accepts outside connections; `--tls` encrypts them with a
-self-signed certificate. Use them together — without `--tls` the notes and
-the login token cross the network in the clear.
-
-| Flag | Meaning |
-| --- | --- |
-| `--vault PATH` | Which notes folder to serve. Also read from `$NOTES_VAULT`. |
-| `--lan` | Accept connections from other devices. Off by default. |
-| `--tls` | Encrypt with a self-signed cert, kept in the state directory. |
-| `--host ADDR` | Bind a specific address instead of `--lan`'s `0.0.0.0`. |
-| `--port N` | Default 8765. |
-| `--state-dir PATH` | Where backups, trash and the TLS cert go. Default: a per-vault folder under `~/.local/state/cairn/vaults/`. |
-| `--no-browser` | Don't open a browser on start. |
-| `--terminal-cwd PATH` | Where "open in terminal" starts. Default `~/workspace`. |
-| `--no-terminal` | Never open a terminal window. |
-| `--sync-cmd PATH` | An executable to run when you press Sync now. Without it there is no button and `/api/sync` is a 404. |
-| `--sync-timer UNIT` | A systemd `--user` timer to read the next scheduled sync from, e.g. `vault-sync.timer`. |
-
 ## Code blocks
 
 Hovering a fenced code block shows two buttons. **copy** puts it on the
@@ -161,20 +164,37 @@ startup banner names the one it will use.
 
 ## Access
 
-A token is generated fresh at every start and printed in the terminal.
-Opening the printed URL on the same machine logs you in. From another device
-you open the plain URL and paste the token once; the server sets an
-`HttpOnly; SameSite=Strict` session cookie and the token never appears in a
-URL, in history, or in the page source. Restarting the server invalidates
-every session.
+A token is generated on first run, kept in the state directory and printed
+in the terminal. Opening the printed URL on the same machine logs you in.
+From another device you open the plain URL and paste the token once; the
+server sets an `HttpOnly; SameSite=Strict` session cookie and the token
+never appears in a URL, in history, or in the page source.
 
-With `--tls` the certificate is self-signed, so a browser warns the first
-time. Rather than checking the printed fingerprint at every visit, install
-`certs/server.crt` from the state directory (the banner prints where that
-is) once as a trusted certificate on each device — macOS
-Keychain Access, or iOS Settings → General → VPN & Device Management,
-followed by Certificate Trust Settings. After that the device connects
-cleanly and you type nothing.
+The token survives a restart, so a device you pair once stays paired — you
+are not retyping it on the phone every time the server comes back. It lives
+at `token` in the state directory, mode `600` in a `700` directory, the same
+as the TLS private key beside it. `--new-token` throws it away and issues a
+fresh one, which logs out every device.
+
+With `--tls` the certificate is self-signed, so a browser warns until you
+install it. Do that once per device and the warning stops for good. On the
+device itself, open `/cert` on the server:
+
+```
+https://<address-or-name>:8765/cert
+```
+
+and trust the file it downloads — macOS Keychain Access, or iOS Settings →
+General → VPN & Device Management, followed by Certificate Trust Settings.
+The banner prints that URL, the path of the file on this machine, and the
+certificate's SHA-256 fingerprint; check the fingerprint before you trust
+it. After that the device connects cleanly and you type nothing.
+
+`/cert` needs no token. It serves the certificate the server already hands
+to anyone who opens a TLS connection to it, so it publishes nothing that
+connecting does not — and it is the only way onto a device that has no
+shell and no copy of the state directory. The private key is served by no
+route.
 
 The certificate covers `localhost`, `127.0.0.1`, this machine's mDNS name
 (`<hostname>.local`) and every non-virtual LAN address it has. VPN tunnels,
@@ -212,7 +232,8 @@ the same thing. Not a release process — a number that moves when the editor
 does, so a screenshot, a bug report and a running server can be talked about
 as the same thing.
 
-- **0.2** — the tree, the outline, the footer, live mode.
+- **0.2** — controls drawn on canvas, the tree, the outline, the footer,
+  live mode.
 - **0.1** — the three-pane editor.
 
 ## What it is not

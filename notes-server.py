@@ -20,8 +20,9 @@ Python standard library only: no pip install, no dependencies, no internet.
 
 How access works
 ----------------
-A token is generated fresh every time the server starts and printed in the
-terminal. Opening the printed URL on this machine logs you in automatically.
+A token is generated on first run, kept in the state directory and printed
+in the terminal, so a device you pair once stays paired across restarts.
+Opening the printed URL on this machine logs you in automatically.
 On another device you open the plain URL and paste the token once; the server
 sets a session cookie (HttpOnly, SameSite=Strict) and the token never appears
 in a URL, browser history, or the page source.
@@ -108,10 +109,14 @@ MIME = {
 
 # Not a release process, just a number that moves when the editor does, so a
 # screenshot, a bug report and a running server can be talked about as the
-# same thing. 0.1 was the three-pane editor; 0.2 grew the tree, the outline,
-# the footer and live mode.
+# same thing. 0.1 was the three-pane editor; 0.2 drew its controls on canvas,
+# put the vault in a tree, the note in an outline and sync in a footer, and
+# added live mode.
 VERSION = "0.2.0"
 
+# A fallback only: main() replaces this with the token persisted in the
+# state directory. Generating it per process meant every restart logged
+# out every device and the token had to be typed on the phone again.
 TOKEN = secrets.token_urlsafe(24)
 COOKIE = "notes_session"
 
@@ -241,6 +246,36 @@ def set_state_dir(path):
     # footer of another — invisible when this was a line of text in a sidebar,
     # and a red dot now that it is not.
     SYNC_STATE = os.path.join(path, "sync.json")
+
+
+def load_token(rotate=False):
+    """The access token, kept in the state directory across restarts.
+
+    A token that survives a restart is the difference between pairing a phone
+    once and pairing it every single time the server comes back. The cost is
+    that the token is now at rest on disk, so it is written 0600 inside a
+    0700 directory -- the same posture as the TLS private key already sitting
+    beside it, and anyone who can read either can read the vault anyway.
+    """
+    global TOKEN
+    path = os.path.join(STATE_DIR, "token")
+    if not rotate:
+        try:
+            saved = open(path).read().strip()
+        except OSError:
+            saved = ""
+        if saved:
+            TOKEN = saved
+            return TOKEN
+    TOKEN = secrets.token_urlsafe(24)
+    # Created with the mode it needs rather than widened and then narrowed:
+    # between an open() and a chmod() the token is readable by anyone. The
+    # chmod after covers the other case, a file that already existed wider.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(TOKEN + "\n")
+    os.chmod(path, 0o600)
+    return TOKEN
 
 
 def inside(path, root):
@@ -1200,6 +1235,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True, "lines": lines, "seq": seq,
                                         "running": SYNC_LOCK.locked()})
 
+        if path == "/cert":
+            # Deliberately unauthenticated, and deliberately the .crt alone.
+            # This is the very certificate the server already hands to anyone
+            # who opens a TLS connection to it, so publishing it gives away
+            # nothing that connecting does not. The private key beside it is
+            # served by no route at all.
+            #
+            # The point of it is the phone. Installing the certificate is what
+            # stops the browser warning for good, and a device with no shell
+            # and no copy of the state directory has no other way to get the
+            # file. Verify the printed fingerprint before trusting it.
+            if not self.server.tls:
+                return self.fail(404, "server is not running with --tls")
+            try:
+                with open(os.path.join(CERT_DIR, "server.crt"), "rb") as fh:
+                    blob = fh.read()
+            except OSError as e:
+                return self.fail(500, "cannot read the certificate — %s" % e)
+            return self.send(200, blob, "application/x-x509-ca-cert",
+                             {"Content-Disposition":
+                              'attachment; filename="cairn.crt"'})
+
         if path.startswith("/media/"):
             if not self.authed():
                 return self.fail(403, "not unlocked")
@@ -1365,6 +1422,9 @@ def main():
                          "per-vault directory under $XDG_STATE_HOME/cairn, "
                          "i.e. ~/.local/state/cairn/vaults/<name>-<hash>)")
     ap.add_argument("--version", action="version", version="cairn " + VERSION)
+    ap.add_argument("--new-token", action="store_true",
+                    help="discard the saved token and generate a fresh one, "
+                         "logging out every device that had been paired")
     ap.add_argument("--sync-cmd", default=None,
                     help="script the Sync button runs, with no arguments and no "
                          "shell (default: no button, and /api/sync is a 404)")
@@ -1426,6 +1486,7 @@ def main():
     except OSError as e:
         sys.exit("could not create state directory %s — %s" % (STATE_DIR, e))
     migrated = migrate_state()
+    load_token(rotate=args.new_token)
 
     host = args.host or ("0.0.0.0" if args.lan else "127.0.0.1")
     exposed = host not in ("127.0.0.1", "localhost")
@@ -1451,6 +1512,9 @@ def main():
     print("  vault : %s" % VAULT)
     print("  notes : %d" % len(list_notes()))
     print("  state : %s" % STATE_DIR)
+    if inside(STATE_DIR, VAULT):
+        print("  !! the state directory is inside the vault — the access token")
+        print("     and the TLS private key are in a folder you may be syncing.")
     for old, new, left in migrated:
         print("  moved %s -> %s" % (old, new))
         for src in left:
@@ -1469,9 +1533,18 @@ def main():
         for name in mdns:
             print("  or, if mDNS works: %s://%s:%d/" % (scheme, name, args.port))
         print("\n  Token (paste it on the other device):\n\n      %s\n" % TOKEN)
+        print("  The same token comes back on the next start, so a device you")
+        print("  pair once stays paired. --new-token replaces it.\n")
         if args.tls:
-            print("  Certificate is self-signed, so the browser will warn once.")
-            print("  Verify this SHA-256 fingerprint before accepting it:")
+            print("  Certificate is self-signed. Install it once per device and")
+            print("  the warning stops for good. On the device itself, open:")
+            for h in (addrs or ["<this machine's IP>"])[:1] + mdns[:1]:
+                print("      %s://%s:%d/cert" % (scheme, h, args.port))
+            print("  and trust the file it downloads (iOS: Settings → General →")
+            print("  VPN & Device Management, then Certificate Trust Settings).")
+            print("  On this machine it is %s"
+                  % os.path.join(CERT_DIR, "server.crt"))
+            print("  Verify this SHA-256 fingerprint before trusting it:")
             print("      %s\n" % cert_fingerprint(os.path.join(CERT_DIR, "server.crt")))
         else:
             print("  !! PLAIN HTTP ON THE NETWORK !!")
