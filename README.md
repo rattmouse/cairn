@@ -39,9 +39,10 @@ the login token cross the network in the clear.
 | --- | --- |
 | `--vault PATH` | Which notes folder to serve. Also read from `$NOTES_VAULT`. |
 | `--lan` | Accept connections from other devices. Off by default. |
-| `--tls` | Encrypt with a self-signed cert in the vault's `.certs/`. |
+| `--tls` | Encrypt with a self-signed cert, kept in the state directory. |
 | `--host ADDR` | Bind a specific address instead of `--lan`'s `0.0.0.0`. |
 | `--port N` | Default 8765. |
+| `--state-dir PATH` | Where backups, trash and the TLS cert go. Default: a per-vault folder under `~/.local/state/cairn/vaults/`. |
 | `--no-browser` | Don't open a browser on start. |
 | `--terminal-cwd PATH` | Where "open in terminal" starts. Default `~/workspace`. |
 | `--no-terminal` | Never open a terminal window. |
@@ -94,7 +95,8 @@ every session.
 
 With `--tls` the certificate is self-signed, so a browser warns the first
 time. Rather than checking the printed fingerprint at every visit, install
-`.certs/server.crt` once as a trusted certificate on each device — macOS
+`certs/server.crt` from the state directory (the banner prints where that
+is) once as a trusted certificate on each device — macOS
 Keychain Access, or iOS Settings → General → VPN & Device Management,
 followed by Certificate Trust Settings. After that the device connects
 cleanly and you type nothing.
@@ -114,8 +116,13 @@ without invalidating anything.
 - Binds `127.0.0.1` unless `--lan` is passed explicitly.
 - Every request needs the token; cross-origin requests are refused outright.
 - Writes are atomic (temp file, then `os.replace`).
-- The previous version of every saved note is kept in the vault's `.backups/`.
-- Deleting moves the file to `.trash/`; nothing is unlinked.
+- The previous version of every saved note is kept in `backups/`, and
+  deleting moves the file to `trash/`; nothing is unlinked. Both live in the
+  state directory, *outside* the vault, so a vault in a sync folder (Proton
+  Drive, iCloud, Dropbox) doesn't upload every old version or keep deleted
+  notes forever — and the `--tls` private key never reaches the cloud.
+  Older vaults with `.backups/`, `.trash/` or `.certs/` inside them are moved
+  out on the next start; the banner says where.
 - A save is refused if the file changed on disk since the browser loaded it.
 - Paths are resolved against the vault root; only `.md` files can be written.
 - Opening a terminal is refused for anything but a browser on this machine,

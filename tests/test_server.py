@@ -30,6 +30,10 @@ SERVER = os.path.join(ROOT, "notes-server.py")
 
 PASS, FAIL = [], []
 
+# Every server in these tests gets $XDG_STATE_HOME pointed here, so backups,
+# trash, certs and sync.json never land in the real ~/.local/state/cairn.
+STATE = None
+
 
 def check(label, cond, detail=""):
     (PASS if cond else FAIL).append(label)
@@ -56,9 +60,21 @@ def make_vault():
     with open(os.path.join(d, "bin", "Gamma.md"), "w") as f:
         f.write("# Gamma\n\nIn a folder called bin.\n")
     # ...while genuinely hidden directories must still stay out of the listing.
-    os.makedirs(os.path.join(d, ".backups"))
-    with open(os.path.join(d, ".backups", "Old.md"), "w") as f:
-        f.write("# Old\n\nA backup, not a note.\n")
+    os.makedirs(os.path.join(d, ".obsidian"))
+    with open(os.path.join(d, ".obsidian", "Old.md"), "w") as f:
+        f.write("# Old\n\nEditor config, not a note.\n")
+    # An older cairn wrote these inside the vault. The first start moves them
+    # out — test_state checks that, and runs before anything else does.
+    os.makedirs(os.path.join(d, ".backups", "Notes"))
+    with open(os.path.join(d, ".backups", "Notes", "Alpha.20200101-000000.md"), "w") as f:
+        f.write("# Alpha\n\nAn old version.\n")
+    os.makedirs(os.path.join(d, ".trash"))
+    with open(os.path.join(d, ".trash", "Gone.20200101-000000.md"), "w") as f:
+        f.write("# Gone\n\nDeleted once.\n")
+    os.makedirs(os.path.join(d, ".certs"))
+    with open(os.path.join(d, ".certs", "server.key"), "w") as f:
+        # Not key-shaped on purpose: the repo's commit hook scans for that.
+        f.write("stand-in for a key the old cairn left in the vault\n")
     # node_modules is the one non-hidden directory that stays skipped: a real
     # one carries thousands of package READMEs into the /api/notes payload.
     os.makedirs(os.path.join(d, "node_modules", "leftpad"))
@@ -74,6 +90,8 @@ def make_vault():
 
 
 def start(vault, port, extra=(), env=None):
+    if env is None:
+        env = dict(os.environ, XDG_STATE_HOME=STATE)
     # -u matters: the server's banner is short, so on a pipe it would sit in
     # stdio's buffer and the readline() below would block forever.
     p = subprocess.Popen(
@@ -93,6 +111,17 @@ def start(vault, port, extra=(), env=None):
         if "Ctrl-C to stop" in line:
             break
     return p, token, "".join(log)
+
+
+def state_dir(log):
+    """The state directory the server announced in its banner."""
+    m = re.search(r"(?m)^  state : (.+)$", log)
+    return m.group(1).strip() if m else ""
+
+
+def outside(path, vault):
+    return bool(path) and os.path.isabs(path) and \
+        not os.path.abspath(path).startswith(os.path.abspath(vault) + os.sep)
 
 
 def client(tls=False):
@@ -140,6 +169,66 @@ def form(op, base, token):
 
 
 # --------------------------------------------------------------------------
+
+def test_state(vault, port):
+    print("\nstate directory")
+    p, token, log = start(vault, port)
+    try:
+        state = state_dir(log)
+        check("state dir is outside the vault", outside(state, vault), state)
+        check("state dir is under $XDG_STATE_HOME/cairn",
+              state.startswith(os.path.join(STATE, "cairn") + os.sep))
+        check("state dir is not world-readable",
+              os.path.isdir(state) and oct(os.stat(state).st_mode)[-3:] == "700")
+        # Migration of a pre-state-dir vault.
+        check("old .backups/ moved out of the vault",
+              not os.path.exists(os.path.join(vault, ".backups"))
+              and os.path.isfile(os.path.join(state, "backups", "Notes",
+                                              "Alpha.20200101-000000.md")))
+        check("old .trash/ moved out of the vault",
+              not os.path.exists(os.path.join(vault, ".trash"))
+              and os.path.isfile(os.path.join(state, "trash", "Gone.20200101-000000.md")))
+        check("old .certs/ (the private key) moved out of the vault",
+              not os.path.exists(os.path.join(vault, ".certs"))
+              and os.path.isfile(os.path.join(state, "certs", "server.key")))
+        check("migration is announced", ".backups -> " in log and ".certs -> " in log)
+        # A fake key must not be trusted by --tls later on.
+        os.remove(os.path.join(state, "certs", "server.key"))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # A second vault at another path must not share the first one's state.
+    other = tempfile.mkdtemp(prefix="cairn-test-other-")
+    with open(os.path.join(other, "One.md"), "w") as f:
+        f.write("# One\n")
+    p, _, log2 = start(other, port)
+    try:
+        check("another vault gets its own state dir",
+              state_dir(log2) and state_dir(log2) != state)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        shutil.rmtree(other, ignore_errors=True)
+
+    # --state-dir: refused where it would be listed as notes, allowed hidden.
+    p, _, log3 = start(vault, port, ["--state-dir", os.path.join(vault, "state")])
+    p.wait(timeout=5)
+    check("--state-dir visible inside the vault is refused",
+          p.returncode != 0 and "not hidden" in log3)
+    hidden = os.path.join(vault, ".cairn")
+    p, _, log4 = start(vault, port, ["--state-dir", hidden])
+    try:
+        check("--state-dir under a dot-directory in the vault is allowed",
+              p.returncode is None and state_dir(log4) == hidden)
+        check("in-vault state dir migrates nothing",
+              os.path.isfile(os.path.join(state, "trash", "Gone.20200101-000000.md")))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        shutil.rmtree(hidden, ignore_errors=True)
+    p, _, log5 = start(vault, port, ["--state-dir", os.path.dirname(vault)])
+    p.wait(timeout=5)
+    check("--state-dir containing the vault is refused",
+          p.returncode != 0 and "contains the vault" in log5)
+
 
 def test_auth(vault, port):
     print("\nauth")
@@ -219,8 +308,9 @@ def test_write(vault, port):
 
         kept = json.loads(b)["backup"]
         check("backup recorded", bool(kept), str(kept))
+        check("backup lives outside the vault", outside(kept, vault), str(kept))
         check("backup holds the pre-edit version",
-              open(os.path.join(vault, kept), encoding="utf-8").read() == original)
+              open(kept, encoding="utf-8").read() == original)
 
         # stale mtime must be refused
         stale = json.dumps({"path": alpha["path"], "content": "clobbered",
@@ -248,7 +338,11 @@ def test_write(vault, port):
         check("trash moves rather than deletes",
               s == 200
               and not os.path.exists(os.path.join(vault, "Notes/Gamma.md"))
-              and os.path.isfile(os.path.join(vault, moved)))
+              and os.path.isfile(moved))
+        check("trash lives outside the vault", outside(moved, vault), moved)
+        check("trash keeps the note's folder",
+              os.path.basename(os.path.dirname(moved)) == "Notes"
+              and os.path.basename(moved).startswith("Gamma."))
     finally:
         p.terminate(); p.wait(timeout=5)
 
@@ -287,7 +381,8 @@ def test_tls(vault, port):
     try:
         check("prints a cert fingerprint", "fingerprint" in log.lower())
         check("no plaintext warning when tls is on", "PLAIN HTTP ON THE NETWORK" not in log)
-        key = os.path.join(vault, ".certs", "server.key")
+        key = os.path.join(state_dir(log), "certs", "server.key")
+        check("private key is outside the vault", outside(key, vault), key)
         check("private key is mode 600", os.path.exists(key)
               and oct(os.stat(key).st_mode)[-3:] == "600")
         op, _ = client(tls=True)
@@ -339,8 +434,12 @@ def test_cert_names(vault, port):
         print("  (skipped: openssl not on PATH)")
         return
 
-    certs = os.path.join(vault, ".certs")
+    # An explicit --state-dir so the cert's path is known before the server
+    # has printed its banner.
+    sd = tempfile.mkdtemp(prefix="cairn-test-certstate-", dir=STATE)
+    certs = os.path.join(sd, "certs")
     cert = os.path.join(certs, "server.crt")
+    tls = ["--lan", "--tls", "--state-dir", sd]
 
     # A VPN tunnel and a libvirt bridge are both addresses this machine really
     # has and neither is one another device can reach. Pinning the cert to one
@@ -360,7 +459,7 @@ def test_cert_names(vault, port):
           "virtual=%s offered=%s" % (virtual, offered))
 
     shutil.rmtree(certs, ignore_errors=True)
-    p, token, log = start(vault, port, ["--lan", "--tls"])
+    p, token, log = start(vault, port, tls)
     try:
         got = san(cert)
         check("cert covers loopback", "IP Address:127.0.0.1" in got, str(got))
@@ -385,7 +484,7 @@ def test_cert_names(vault, port):
                     "-days", "1", "-subj", "/CN=notes-server",
                     "-addext", "subjectAltName=IP:203.0.113.9"],
                    check=True, capture_output=True)
-    p, token, log = start(vault, port + 1, ["--lan", "--tls"])
+    p, token, log = start(vault, port + 1, tls)
     try:
         check("regenerates a cert that stopped fitting", "regenerating" in log)
         check("says the old trust is void", "trust this one" in log)
@@ -398,7 +497,7 @@ def test_cert_names(vault, port):
     # A cert that already fits must be left alone -- regenerating on every
     # start would void the trust the user set up on each device.
     kept = open(cert).read()
-    p, token, log = start(vault, port + 2, ["--lan", "--tls"])
+    p, token, log = start(vault, port + 2, tls)
     try:
         check("a cert that still fits is reused",
               open(cert).read() == kept and "regenerating" not in log,
@@ -486,7 +585,9 @@ def test_sync(vault, port):
         ran = open(marker).read() if os.path.isfile(marker) else ""
         check("the command actually ran", "cwd=" in ran)
         check("no arguments from the request reach it", "argc=0" in ran, ran.split("\n")[0])
-        check("it runs in the vault", "cwd=%s" % vault in ran)
+        # $PWD on a Mac is /private/var/..., the resolved form of the temp dir.
+        check("it runs in the vault",
+              "cwd=%s" % vault in ran or "cwd=%s" % os.path.realpath(vault) in ran)
 
         code, body = call(op, base + "/api/sync/status")
         st = json.loads(body)["sync"]
@@ -722,9 +823,12 @@ def test_terminal(vault, port):
 def main():
     if not os.path.isfile(SERVER):
         sys.exit("notes-server.py not found next to tests/ — run from the repo")
+    global STATE
     vault = make_vault()
+    STATE = tempfile.mkdtemp(prefix="cairn-test-state-")
     print("temp vault: %s" % vault)
     try:
+        test_state(vault, 8930)
         test_auth(vault, 8931)
         test_read(vault, 8932)
         test_write(vault, 8933)
@@ -735,6 +839,7 @@ def main():
         test_sync(vault, 8937)
     finally:
         shutil.rmtree(vault, ignore_errors=True)
+        shutil.rmtree(STATE, ignore_errors=True)
 
     print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
     for f in FAIL:
