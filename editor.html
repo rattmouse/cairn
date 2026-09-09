@@ -112,6 +112,19 @@ body.mode-edit #editWrap{border-right:0}
 #view pre{background:var(--code-bg);border:1px solid var(--edge);border-radius:8px;
   padding:12px 14px;overflow-x:auto;margin:0 0 15px}
 #view pre code{background:none;padding:0;font-size:12.5px;line-height:1.55}
+.cb{position:relative;margin:0 0 15px}
+.cb pre{margin:0}
+.cb .cbtools{position:absolute;top:5px;right:5px;display:flex;gap:4px;padding:3px;
+  background:var(--panel);border:1px solid var(--edge);border-radius:8px;
+  box-shadow:0 2px 8px rgba(0,0,0,.14);opacity:0;transition:opacity .12s}
+.cb:hover .cbtools,.cb:focus-within .cbtools{opacity:1}
+@media (hover:none){.cb .cbtools{opacity:1}}
+.cbtools button{padding:2px 9px;font-size:11px;line-height:1.6;color:var(--dim);
+  background:var(--bg);border:1px solid var(--edge);border-radius:6px;cursor:pointer;
+  white-space:nowrap}
+.cbtools button:hover{border-color:var(--accent);color:var(--accent)}
+.cbtools button.done{border-color:var(--ok);color:var(--ok)}
+.cbtools button.bad{border-color:var(--bad);color:var(--bad)}
 #view table{border-collapse:collapse;margin:0 0 16px;font-size:13.5px;display:block;overflow-x:auto}
 #view th,#view td{border:1px solid var(--edge);padding:6px 10px;text-align:left;vertical-align:top}
 #view th{background:var(--panel);font-weight:600}
@@ -274,6 +287,19 @@ function splitFm(text){
   return [text.slice(4, end), text.slice(end + 5)];
 }
 
+/* Languages where "open in terminal" means anything. A bare fence in these
+   notes is nearly always a shell command, so it counts; a ```python block
+   does not, and gets Copy alone. */
+const SHELLISH = ["", "sh", "bash", "zsh", "shell", "console", "terminal", "shell-session"];
+
+function codeTools(lang){
+  let html = '<div class="cbtools"><button type="button" data-cb="copy">copy</button>';
+  if (TERMINAL_OK && SHELLISH.includes((lang || "").toLowerCase()))
+    html += '<button type="button" data-cb="term" title="Open a terminal with this '
+          + 'typed at the prompt. It is not run.">terminal</button>';
+  return html + "</div>";
+}
+
 function render(text, ctx){
   const [fm, body] = splitFm(text);
   const lines = body.split("\n");
@@ -299,8 +325,9 @@ function render(text, ctx){
       i++;
       while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
       i++;
-      out += "<pre><code" + (lang ? ' class="language-' + esc(lang) + '"' : "") + ">"
-           + esc(buf.join("\n")) + "</code></pre>";
+      out += '<div class="cb">' + codeTools(lang)
+           + "<pre><code" + (lang ? ' class="language-' + esc(lang) + '"' : "") + ">"
+           + esc(buf.join("\n")) + "</code></pre></div>";
       continue;
     }
 
@@ -387,7 +414,7 @@ function render(text, ctx){
 }
 
 /* ============================== state ============================== */
-let NOTES = [], IMAGES = {}, TARGETS = {};
+let NOTES = [], IMAGES = {}, TARGETS = {}, TERMINAL_OK = false;
 let current = null, dirty = false, saving = false;
 
 const $ = id => document.getElementById(id);
@@ -659,13 +686,69 @@ async function doSync(){
 /* ---------------------------- boot ---------------------------- */
 async function reload(){
   const r = await api("/api/notes");
-  NOTES = r.notes; IMAGES = r.images;
+  NOTES = r.notes; IMAGES = r.images; TERMINAL_OK = !!r.terminal;
   buildTargets();
   if (current){
     const again = NOTES.find(n => n.path === current.path);
     current = again || null;
   }
   drawList(qEl.value);
+}
+
+/* ------------------------ code block buttons ------------------------ */
+/* Reading the text back out of the DOM keeps the code block itself the single
+   source of truth — no second, escaped copy in a data attribute to disagree. */
+function codeText(btn){
+  const pre = btn.closest(".cb").querySelector("code");
+  return pre ? pre.textContent.replace(/\n$/, "") : "";
+}
+
+function flash(btn, label, cls){
+  const was = btn.textContent;
+  btn.textContent = label;
+  btn.classList.add(cls);
+  setTimeout(() => { btn.textContent = was; btn.classList.remove(cls); }, 1600);
+}
+
+async function copyText(text){
+  // clipboard.writeText needs a secure context, which plain HTTP over the LAN
+  // is not — and even where it exists the browser can still refuse the write,
+  // so a rejection falls through to the old selection trick rather than out.
+  if (navigator.clipboard && window.isSecureContext){
+    try { return await navigator.clipboard.writeText(text); }
+    catch (e) { /* fall through */ }
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand("copy");
+  ta.remove();
+  if (!ok) throw new Error("copy was refused by the browser");
+}
+
+async function codeAction(btn){
+  const text = codeText(btn);
+  // A second click while the last result is still showing would capture that
+  // label as the button's "real" text and leave it stuck there.
+  if (!text || btn.classList.contains("done") || btn.classList.contains("bad")) return;
+  try{
+    if (btn.dataset.cb === "copy"){
+      await copyText(text);
+      flash(btn, "copied", "done");
+      setStatus("", "");                     // don't leave a stale error beside a success
+    } else {
+      const r = await api("/api/terminal", {
+        method: "POST", body: JSON.stringify({command: text})
+      });
+      flash(btn, "opened", "done");
+      setStatus("typed into " + r.terminal + " at " + r.cwd + " — not run", "saved");
+    }
+  } catch (e){
+    flash(btn, "failed", "bad");
+    setStatus(e.message, "error");
+  }
 }
 
 listEl.addEventListener("click", e => {
@@ -675,7 +758,10 @@ listEl.addEventListener("click", e => {
 viewEl.addEventListener("click", e => {
   const a = e.target.closest("a.wl[data-open]");
   if (a){ e.preventDefault(); open_(a.dataset.open); }
+  const b = e.target.closest("button[data-cb]");
+  if (b) codeAction(b);
 });
+
 edEl.addEventListener("input", () => { if (!dirty) setDirty(true); preview(); });
 edEl.addEventListener("keydown", e => {
   if (e.key === "Tab"){

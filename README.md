@@ -43,6 +43,45 @@ the login token cross the network in the clear.
 | `--host ADDR` | Bind a specific address instead of `--lan`'s `0.0.0.0`. |
 | `--port N` | Default 8765. |
 | `--no-browser` | Don't open a browser on start. |
+| `--terminal-cwd PATH` | Where "open in terminal" starts. Default `~/workspace`. |
+| `--no-terminal` | Never open a terminal window. |
+
+## Code blocks
+
+Hovering a fenced code block shows two buttons. **copy** puts it on the
+clipboard. **terminal** opens a real terminal window on the machine running
+the server, at `~/workspace`, with the command typed at the prompt and *not
+executed* — you still read it and press Enter yourself. Change where it opens
+with `--terminal-cwd`, or turn it off with `--no-terminal`.
+
+The command is never handed to a shell for evaluation. It is written to a file
+and read back with `$(cat)`, and the text a command substitution yields is
+never re-parsed as shell syntax. It then goes into the *line editor* rather
+than the shell: under bash by a readline macro, which types characters and
+cannot press Return for you, and under zsh by `print -z`. So a code block full
+of quotes and semicolons arrives as text rather than as instructions.
+Multi-line blocks land as one editable buffer.
+
+`$SHELL` decides which — a Mac on the stock shell gets zsh, not a surprise
+bash prompt. Either way the window is yours: it reads the startup files your
+terminal would have read, so your prompt, your `PATH` and your aliases are
+all there. (Which files those are is a question about the terminal, not the
+shell: Terminal.app opens a login shell, Linux emulators do not.)
+
+On Linux the first installed emulator wins, in roughly desktop-native order
+(`konsole`, `gnome-terminal`, `kitty`, `alacritty`, … down to `xterm`). On
+macOS it opens Terminal.app. `$CAIRN_TERMINAL` overrides both — a binary name
+on Linux, an application name on macOS:
+
+```bash
+CAIRN_TERMINAL=iTerm python3 notes-server.py --vault ~/Documents/notes
+```
+
+The button only appears for shell-ish blocks (` ```bash `, ` ```sh `, or no
+language at all), only when the browser is on the same machine as the server —
+a phone on the LAN is still authenticated, but it isn't sitting in front of
+the screen the window would open on — and only if a terminal was found. The
+startup banner names the one it will use.
 
 ## Access
 
@@ -62,6 +101,8 @@ every session.
 - Deleting moves the file to `.trash/`; nothing is unlinked.
 - A save is refused if the file changed on disk since the browser loaded it.
 - Paths are resolved against the vault root; only `.md` files can be written.
+- Opening a terminal is refused for anything but a browser on this machine,
+  and it types the command rather than running it.
 
 ## What it is not
 
@@ -84,5 +125,8 @@ YAML frontmatter. Footnotes and nested blockquotes are not handled.
 python3 tests/test_server.py
 ```
 
-Checks over auth, reading, writing, path safety and TLS. Standard library
-only. It builds a throwaway vault in `/tmp` and never touches a real one.
+Checks over auth, reading, writing, path safety, TLS, and opening a terminal.
+Standard library only. It builds a throwaway vault in `/tmp` and never touches
+a real one. No terminal window is opened during the tests: a shim records what
+the server tried to launch, and the shell part is driven under a pty, which is
+where a hostile code block is proved to be typed rather than run.

@@ -411,6 +411,209 @@ def test_sync(vault, port):
 
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# The terminal endpoint. No window is ever opened here: the server is pointed
+# at a shim that records what it was asked to launch. On Linux $CAIRN_TERMINAL
+# names that shim; on macOS the terminal is an application reached through
+# `open`, so $CAIRN_TERMINAL (an app name there) can't be a script -- instead a
+# fake `open` shadows the real one on PATH. Either way the shim writes the same
+# record. The pty checks then run the real launcher script and prove the
+# command is typed rather than executed, which is the whole promise.
+
+SHIM = """#!/bin/bash
+{ echo "argv: $*"; echo "cwd: $PWD"; echo "env-cmd: ${CAIRN_CMD-none}"; } > "$CAIRN_RECORD"
+for a in "$@"; do
+  [ -f "$a" ] && cp -R "$(dirname "$a")" "$CAIRN_RECORD.dir"   # it deletes itself later
+done
+"""
+
+
+def load_server():
+    """Import notes-server.py, for the few things worth checking without HTTP."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cairn_server", SERVER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def launch(op, url, command, record):
+    """Ask the server to open a terminal; return what the shim caught."""
+    for f in (record, record + ".dir"):
+        shutil.rmtree(f, ignore_errors=True) if os.path.isdir(f) else None
+        if os.path.isfile(f):
+            os.remove(f)
+    s, b = call(op, url, data=json.dumps({"command": command}).encode(), method="POST",
+                headers={"Content-Type": "application/json"})
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if os.path.exists(record) and os.path.getsize(record):
+            time.sleep(0.1)
+            break
+        time.sleep(0.05)
+    rec = open(record).read() if os.path.exists(record) else ""
+    argv = rec.split("\n")[0][len("argv: "):].split() if rec else []
+    return s, rec, (argv[-1] if argv else ""), record + ".dir"
+
+
+def typed_not_run(launcher, home):
+    """Run the launcher the emulator was given, through a pty, as the emulator
+    would. Returns everything the shell drew on the screen."""
+    import fcntl
+    import pty
+    import select
+    import struct
+    import termios
+    env = dict(os.environ, HOME=home, TERM="xterm", PS1="$ ")
+    env.pop("CAIRN_CMD", None)                      # nothing may depend on it
+    pid, fd = pty.fork()
+    if pid == 0:                                    # child: the shell under test
+        os.execvpe(launcher, [launcher], env)
+    # Wide window: readline wraps what it types at the terminal width, and a
+    # wrapped line would look like a different string to the checks below.
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 400, 0, 0))
+    buf, deadline = b"", time.time() + 6
+    while time.time() < deadline:
+        r, _, _ = select.select([fd], [], [], 0.3)
+        if fd not in r:
+            continue
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        if b"\x1b[5n" in chunk:                     # play the terminal emulator
+            os.write(fd, b"\x1b[0n")
+    try:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+    except OSError:
+        pass
+    os.close(fd)
+    return buf.decode("utf-8", "replace")
+
+
+def test_terminal(vault, port):
+    print("\nopen in terminal")
+    record = os.path.join(vault, "launched.txt")
+    home = os.path.join(vault, "home")
+    os.makedirs(home, exist_ok=True)
+    os.environ["CAIRN_RECORD"] = record
+
+    mac = sys.platform == "darwin"
+    saved_path = os.environ["PATH"]
+    if mac:
+        fakebin = os.path.join(vault, "fakebin")
+        os.makedirs(fakebin, exist_ok=True)
+        shim = os.path.join(fakebin, "open")
+        os.environ.pop("CAIRN_TERMINAL", None)          # server resolves "Terminal"
+        os.environ["PATH"] = fakebin + os.pathsep + saved_path
+    else:
+        shim = os.path.join(vault, "fake-terminal")
+        os.environ["CAIRN_TERMINAL"] = shim
+    with open(shim, "w") as f:
+        f.write(SHIM)
+    os.chmod(shim, 0o755)
+
+    mod = load_server()
+    check("macOS opens an app rather than running a binary",
+          mod.terminal_argv("Terminal", None, "/tmp/t/launch", "/home/u")
+          == ["open", "-a", "Terminal", "/tmp/t/launch"])
+    check("elsewhere the emulator is given the launcher",
+          mod.terminal_argv("konsole", ["--workdir", "{cwd}", "-e"], "/tmp/t/launch", "/home/u")
+          == ["konsole", "--workdir", "/home/u", "-e", "/tmp/t/launch"])
+    rc_name = mod.shell_parts()[0]                      # "rc.bash" or ".zshrc"
+
+    # The window has to come up as the user's own, which means reading the file
+    # the platform's terminal would have read. A Mac running bash keeps its
+    # prompt and its PATH in ~/.bash_profile, never in the ~/.bashrc a Linux
+    # emulator reads. Marking that file proves the right one was loaded.
+    user_rc = ".zshrc" if rc_name == ".zshrc" else (".bash_profile" if mac else ".bashrc")
+    with open(os.path.join(home, user_rc), "w") as f:
+        f.write("PS1='cairn-prompt$ '\n")
+
+    p, token, _ = start(vault, port, ["--terminal-cwd", vault])
+    try:
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % port
+        url = base + "/api/terminal"
+        hdr = {"Content-Type": "application/json"}
+
+        s, _ = call(op, url, data=b'{"command":"echo hi"}', method="POST", headers=hdr)
+        check("terminal endpoint needs a session", s == 403)
+        check("nothing launched while locked", not os.path.exists(record))
+
+        form(op, base, token)
+        s, b = call(op, base + "/api/notes")
+        check("capability advertised to the client", json.loads(b)["terminal"] is True)
+
+        # A note is just text, and text can be hostile. This one tries to break
+        # out of the quoting and run something; it must arrive as characters.
+        nasty = 'foo"; touch %s/PWNED; echo "' % vault
+        s, rec, launcher, copied = launch(op, url, nasty, record)
+        cwds = ("cwd: " + vault, "cwd: " + os.path.realpath(vault))
+        check("opens a terminal", s == 200)
+        check("the emulator was actually launched", bool(rec))
+        check("launched at the requested directory", any(c in rec for c in cwds))
+        check("emulator is given the launcher script", launcher.endswith("/launch"))
+        check("command is not in the emulator's argv", nasty not in rec.split("\n")[0])
+        check("command is not in the environment either", "env-cmd: none" in rec)
+
+        body = {f: open(os.path.join(copied, f)).read() for f in os.listdir(copied)}
+        exec_line = body["launch"].strip().splitlines()[-1]
+        check("launcher runs an interactive shell, no command",
+              exec_line.startswith("exec ") and " -c " not in body["launch"]
+              and (exec_line.endswith(" -i") or exec_line.endswith(" -il")))
+        check("launcher starts in the requested directory",
+              ("cd " + vault) in body["launch"]
+              or ("cd " + os.path.realpath(vault)) in body["launch"])
+        check("command lives in its own file, verbatim", body["cmd"] == nasty)
+        check("command is not written into the rcfile", nasty not in body[rc_name])
+        check("nothing is left world-readable",
+              all(oct(os.stat(os.path.join(copied, f)).st_mode)[-3:] in ("600", "700")
+                  for f in body))
+
+        # The load-bearing one: run that launcher exactly as konsole would.
+        out = typed_not_run(launcher, home)
+        check("hostile command is typed, not run", not os.path.exists(vault + "/PWNED"))
+        check("hostile command arrives verbatim", nasty in re.sub(r"[\r\n]", "", out))
+        check("the shell cleaned up after itself", not os.path.isdir(os.path.dirname(launcher)))
+        check("the window loads the user's own " + user_rc, "cairn-prompt$" in out)
+
+        s, _, launcher, _ = launch(op, url, "cd /tmp\nls -la", record)
+        out = typed_not_run(launcher, home)
+        check("multi-line block lands as one buffer",
+              "cd /tmp" in out and "ls -la" in out and "total " not in out)
+
+        s, _ = call(op, url, data=b'{"command":"   "}', method="POST", headers=hdr)
+        check("empty command refused", s == 400)
+        s, _ = call(op, url, data=b'{"nope":1}', method="POST", headers=hdr)
+        check("malformed body refused", s == 400)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        shutil.rmtree(record + ".dir", ignore_errors=True)
+        if os.path.exists(record):
+            os.remove(record)
+
+    p, token, _ = start(vault, port, ["--no-terminal"])
+    try:
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        s, _ = call(op, base + "/api/terminal", data=b'{"command":"echo hi"}',
+                    method="POST", headers={"Content-Type": "application/json"})
+        check("--no-terminal refuses the endpoint", s == 403)
+        s, b = call(op, base + "/api/notes")
+        check("--no-terminal hides the button", json.loads(b)["terminal"] is False)
+        check("--no-terminal launched nothing", not os.path.exists(record))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        os.environ.pop("CAIRN_TERMINAL", None)
+        os.environ.pop("CAIRN_RECORD", None)
+        os.environ["PATH"] = saved_path
+
 
 def main():
     if not os.path.isfile(SERVER):
@@ -423,7 +626,8 @@ def main():
         test_write(vault, 8933)
         test_path_safety(vault, 8934)
         test_tls(vault, 8935)
-        test_sync(vault, 8936)
+        test_terminal(vault, 8936)
+        test_sync(vault, 8937)
     finally:
         shutil.rmtree(vault, ignore_errors=True)
 

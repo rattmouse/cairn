@@ -51,12 +51,14 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import socketserver
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -306,6 +308,237 @@ def run_sync():
 
 
 # --------------------------------------------------------------------------
+# open a terminal
+# --------------------------------------------------------------------------
+#
+# "Open in terminal" hands a code block to a real terminal window on THIS
+# machine with the command typed at the prompt but NOT executed -- the user
+# still has to read it and press Enter. Nothing here ever runs the command.
+#
+# Two things keep that promise:
+#   * the command is never handed to a shell for evaluation. It is written to
+#     a file and read back with $(cat), and the text a command substitution
+#     yields is never re-parsed as shell syntax.
+#   * it is put into the line editor, not the shell. bash gets a readline macro
+#     bound to the terminal's Device Status Report reply -- a macro types
+#     characters and cannot press Return on the user's behalf -- and zsh gets
+#     print -z, which pushes text onto the editing buffer stack for the next
+#     prompt to pop. If neither lands, nothing is typed and the command is
+#     still one Up-arrow away in history.
+#
+# Three shapes of machine to keep in mind here. Linux runs an emulator binary
+# and hands it a command. macOS opens an application, which means a file it can
+# be given, and means launchd in between -- so the environment does not carry
+# across, which is why the command travels as a file. And $SHELL decides which
+# rcfile is written, so a Mac gets zsh rather than a surprise bash prompt.
+
+TERMINAL_CWD = os.path.expanduser("~/workspace")
+TERMINAL_ENABLED = True
+_TERMINAL = None                             # cached (name, flags), () for none
+
+# Emulator, then the flags meaning "start here" and "run this next". The cwd is
+# set on the spawned process too, but several emulators re-exec through a
+# launcher that would otherwise land in $HOME, so the explicit flag matters.
+# macOS is not in this table: there the terminal is an application, opened by
+# `open -a`, and flags is None to say so.
+TERMINALS = [
+    ("ptyxis",              ["--working-directory={cwd}", "--"]),
+    ("konsole",             ["--workdir", "{cwd}", "-e"]),
+    ("gnome-terminal",      ["--working-directory={cwd}", "--"]),
+    ("kgx",                 ["--working-directory={cwd}", "--"]),
+    ("xfce4-terminal",      ["--working-directory={cwd}", "-x"]),
+    ("kitty",               ["--directory", "{cwd}", "--"]),
+    ("alacritty",           ["--working-directory", "{cwd}", "-e"]),
+    ("foot",                ["--working-directory={cwd}", "--"]),
+    ("wezterm",             ["start", "--cwd", "{cwd}", "--"]),
+    ("tilix",               ["--working-directory={cwd}", "-e"]),
+    ("terminator",          ["--working-directory={cwd}", "-x"]),
+    ("x-terminal-emulator", ["-e"]),
+    ("xterm",               ["-e"]),
+]
+
+# The script the emulator is actually given. It exists because macOS needs a
+# file it can hand to an application, and because `cd` here means the window
+# lands in the right place whatever the emulator does with its own flags. The
+# clear is macOS again: Terminal runs this file from a login shell of its own,
+# so the window opens on that shell's banner and on the echoed path of this
+# script. Wiping it leaves a window that looks like any other new one.
+LAUNCHER = """#!/bin/sh
+cd __CWD__ 2>/dev/null || cd "$HOME"
+clear 2>/dev/null
+exec __SHELL__
+"""
+
+# Sourced by the throwaway shell. The command is read from a file rather than
+# passed in the environment because macOS `open` hands the application to
+# launchd, which does not carry the environment across -- and reading a file
+# with $(cat) is the same guarantee anyway: command substitution yields text,
+# and assigning that text to a variable never re-parses it as shell syntax.
+#
+# The bash version inserts the command with a readline macro bound to the
+# terminal's reply to a Device Status Report: ask for one, and the answer types
+# the command at the first prompt. The substitutions escape backslashes and
+# quotes so the macro definition stays well formed whatever the note contains,
+# and turn newlines into readline's "insert a literal newline", so a multi-line
+# block arrives as one editable buffer instead of running a line at a time.
+#
+# Which startup files to load is a question about the terminal, not the shell,
+# so it is asked of the machine rather than of $SHELL. Linux emulators open an
+# interactive non-login shell, whose files are /etc/bash.bashrc and ~/.bashrc.
+# Terminal.app opens a login shell, and a Mac has neither of those files: the
+# system one is /etc/bashrc, reached through /etc/profile where path_helper
+# builds PATH, and the user's is ~/.bash_profile. Read the wrong pair and the
+# window comes up with a bare bash-3.2 prompt and none of their PATH.
+BASH_RC = r"""# written by cairn, deleted as soon as it is read
+CAIRN_CMD=$(cat __DIR__/cmd)
+rm -rf __DIR__
+if [ "$(uname)" = Darwin ]; then
+    [ -f /etc/profile ] && . /etc/profile
+    for __cairn_rc in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+        [ -f "$__cairn_rc" ] && { . "$__cairn_rc"; break; }
+    done
+else
+    [ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
+    [ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+fi
+__cairn=${CAIRN_CMD//\\/\\\\}
+__cairn=${__cairn//\"/\\\"}
+__cairn=${__cairn//$'\n'/\\C-v\\C-j}
+bind '"\e[0n": "'"$__cairn"'"' 2>/dev/null && printf '\e[5n'
+history -s "$CAIRN_CMD"
+unset __cairn __cairn_rc CAIRN_CMD
+"""
+
+# zsh needs no trick: print -z pushes text onto the line editor's buffer stack
+# and the next prompt pops it in, ready to edit. -r stops print from reading
+# backslashes as escapes. Reached when $SHELL is zsh, which on macOS is the
+# default, so a Mac gets its own shell rather than a surprise bash prompt.
+# ZDOTDIR points zsh at the file above instead of the user's own, so nothing
+# they normally load happens by itself -- hence sourcing it here, in the order
+# zsh would have. The login shell matters on macOS specifically: /etc/zprofile
+# is where path_helper builds PATH, and a window without it would be missing
+# every tool the user installed.
+ZSH_RC = r"""# written by cairn, deleted as soon as it is read
+CAIRN_CMD=$(cat __DIR__/cmd)
+rm -rf __DIR__
+ZDOTDIR=$HOME
+[[ -f $HOME/.zshenv ]] && source $HOME/.zshenv
+[[ -o login && -f $HOME/.zprofile ]] && source $HOME/.zprofile
+[[ -f $HOME/.zshrc ]] && source $HOME/.zshrc
+print -rs -- "$CAIRN_CMD"
+print -rz -- "$CAIRN_CMD"
+unset CAIRN_CMD
+"""
+
+
+def find_terminal():
+    """(name, flags) for the terminal to use, or None. flags is None on macOS,
+    where the terminal is an application rather than a binary taking a command.
+    $CAIRN_TERMINAL overrides both: a name here, an app name on a Mac."""
+    global _TERMINAL
+    if _TERMINAL is None:
+        _TERMINAL = ()
+        override = os.environ.get("CAIRN_TERMINAL")
+        if sys.platform == "darwin":
+            _TERMINAL = (override or "Terminal", None)
+        else:
+            table = ([(override, ["-e"])] if override else []) + TERMINALS
+            for name, flags in table:
+                if shutil.which(name):
+                    _TERMINAL = (name, flags)
+                    break
+    return _TERMINAL or None
+
+
+def terminal_ready():
+    return bool(TERMINAL_ENABLED and find_terminal())
+
+
+def terminal_argv(name, flags, launcher, cwd):
+    """The emulator's command line. Separate from open_terminal so the macOS
+    shape can be checked on a machine that isn't one."""
+    if flags is None:
+        return ["open", "-a", name, launcher]
+    return [name] + [f.format(cwd=cwd) for f in flags] + [launcher]
+
+
+def shell_parts():
+    """(rc filename, rc template, how to exec the shell). Follows $SHELL, so a
+    Mac gets zsh and this machine gets bash, rather than either being told
+    which shell it prefers."""
+    if os.path.basename(os.environ.get("SHELL", "")) == "zsh" and shutil.which("zsh"):
+        return ".zshrc", ZSH_RC, "env ZDOTDIR=%s zsh -il"
+    return "rc.bash", BASH_RC, "bash --rcfile %s/rc.bash -i"
+
+
+def sweep_stale():
+    """A window closed before the shell read its rcfile leaves the directory
+    behind. Clear out any old enough to be certainly dead."""
+    tmp = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return
+    for name in names:
+        stale = os.path.join(tmp, name)
+        if not name.startswith("cairn-term-") or not os.path.isdir(stale):
+            continue
+        try:
+            if time.time() - os.path.getmtime(stale) > 600:
+                shutil.rmtree(stale, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def open_terminal(command):
+    """Open a terminal at TERMINAL_CWD with `command` typed but not run."""
+    found = find_terminal()
+    if not found:
+        raise RuntimeError("no terminal emulator found on this machine")
+    name, flags = found
+    cwd = TERMINAL_CWD if os.path.isdir(TERMINAL_CWD) else os.path.expanduser("~")
+    sweep_stale()
+
+    # None of this holds a secret, but the command is the user's business:
+    # mkdtemp is 0700, and the rcfile deletes the whole directory -- itself,
+    # the command, and the launcher -- the moment the shell reads it.
+    rc_dir = tempfile.mkdtemp(prefix="cairn-term-")
+    quoted = shlex.quote(rc_dir)
+    rc_name, rc_body, shell = shell_parts()
+    files = {
+        "cmd": (command, 0o600),
+        rc_name: (rc_body.replace("__DIR__", quoted), 0o600),
+        "launch": (LAUNCHER.replace("__CWD__", shlex.quote(cwd))
+                           .replace("__SHELL__", shell % quoted), 0o700),
+    }
+    for fname, (body, mode) in files.items():
+        path = os.path.join(rc_dir, fname)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.chmod(path, mode)
+
+    launcher = os.path.join(rc_dir, "launch")
+    argv = terminal_argv(name, flags, launcher, cwd)
+    try:
+        if flags is None:
+            # `open` hands the app to launchd and returns straight away, so its
+            # exit status is the only chance to notice a missing application.
+            done = subprocess.run(argv, cwd=cwd, timeout=15,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if done.returncode != 0:
+                raise RuntimeError(done.stderr.decode("utf-8", "replace").strip()
+                                   or "could not open %s" % name)
+        else:
+            subprocess.Popen(argv, cwd=cwd, start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        shutil.rmtree(rc_dir, ignore_errors=True)
+        raise RuntimeError("could not start %s: %s" % (name, e))
+    return name, cwd
+
+
+# --------------------------------------------------------------------------
 # network / tls
 # --------------------------------------------------------------------------
 
@@ -463,6 +696,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return urllib.parse.parse_qs(
             urllib.parse.urlparse(self.path).query).get("token", [""])[0]
 
+    def is_local(self):
+        """True when the request came from this machine, not the network."""
+        host = self.client_address[0]
+        return host.startswith("127.") or host in ("::1", "::ffff:127.0.0.1")
+
     def authed(self):
         """Token gate. Also refuses cross-origin requests outright."""
         origin = self.headers.get("Origin")
@@ -524,7 +762,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.authed():
                 return self.fail(403, "not unlocked")
             return self.send_json(200, {"ok": True, "notes": list_notes(),
-                                        "images": list_images(), "vault": VAULT})
+                                        "images": list_images(), "vault": VAULT,
+                                        "terminal": terminal_ready() and self.is_local()})
 
         if path == "/api/sync/status":
             if not self.authed():
@@ -638,6 +877,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             shutil.move(full, dest)
             return self.send_json(200, {"ok": True, "trashed": os.path.relpath(dest, VAULT)})
 
+        if route == "/api/terminal":
+            # Opening a window is the one thing here that reaches outside the
+            # vault, so it is deliberately the narrowest route in the file:
+            # this machine only. A phone on the LAN is authenticated, but it
+            # is not sitting in front of the screen a window would appear on.
+            if not self.is_local():
+                return self.fail(403, "terminal windows open only on this machine")
+            if not TERMINAL_ENABLED:
+                return self.fail(403, "terminal opening is off (--no-terminal)")
+            try:
+                data = self.body_json()
+                command = data["command"]
+            except (KeyError, ValueError, json.JSONDecodeError) as e:
+                return self.fail(400, str(e))
+            if not isinstance(command, str) or not command.strip():
+                return self.fail(400, "empty command")
+            if len(command) > 8192 or "\x00" in command:
+                return self.fail(400, "command is not something to type")
+            try:
+                name, cwd = open_terminal(command)
+            except RuntimeError as e:
+                return self.fail(503, str(e))
+            self.log_message("opened %s in %s (not run)", name, cwd)
+            return self.send_json(200, {"ok": True, "terminal": name, "cwd": cwd})
+
         return self.fail(404, "no such endpoint")
 
 
@@ -669,11 +933,18 @@ def main():
                     help="systemd --user timer unit to read the next scheduled "
                          "sync from, e.g. vault-sync.timer")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--terminal-cwd", default=None,
+                    help="where 'open in terminal' starts (default: ~/workspace)")
+    ap.add_argument("--no-terminal", action="store_true",
+                    help="refuse to open terminal windows at all")
     args = ap.parse_args()
 
-    global VAULT, CERT_DIR, SYNC_CMD, SYNC_TIMER
+    global VAULT, CERT_DIR, SYNC_CMD, SYNC_TIMER, TERMINAL_CWD, TERMINAL_ENABLED
     if args.vault:
         VAULT = os.path.abspath(os.path.expanduser(args.vault))
+    if args.terminal_cwd:
+        TERMINAL_CWD = os.path.abspath(os.path.expanduser(args.terminal_cwd))
+    TERMINAL_ENABLED = not args.no_terminal
     CERT_DIR = os.path.join(VAULT, ".certs")
 
     if args.sync_cmd:
@@ -734,6 +1005,9 @@ def main():
             print("  Your notes and this token cross the wire unencrypted and are")
             print("  readable by anyone else on this network. Restart with --tls.\n")
     print("  Backups go to .backups/, deletes go to .trash/.")
+    if terminal_ready():
+        print("  Code blocks open in %s at %s — typed, never run."
+              % (find_terminal()[0], TERMINAL_CWD))
     print("  Ctrl-C to stop.\n")
 
     if not args.no_browser:
