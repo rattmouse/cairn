@@ -507,6 +507,98 @@ def test_cert_names(vault, port):
         p.terminate(); p.wait(timeout=5)
 
 
+def test_token_persists(vault, port):
+    """The token has to outlive the process.
+
+    When it was generated per start, every restart logged out every device
+    and the token had to be retyped on the phone. These check both halves:
+    that it comes back, and that --new-token can still throw it away.
+    """
+    print("\ntoken across restarts")
+    sd = tempfile.mkdtemp(prefix="cairn-test-token-", dir=STATE)
+    # --lan because the "stays paired" note is addressed to other devices,
+    # and so is printed with the rest of the other-device instructions.
+    keep = ["--lan", "--state-dir", sd]
+    tokenfile = os.path.join(sd, "token")
+
+    p, first, log = start(vault, port, keep)
+    try:
+        check("a token is issued", bool(first))
+        check("the token is saved in the state dir", os.path.isfile(tokenfile))
+        check("the token file is mode 600", os.path.exists(tokenfile)
+              and oct(os.stat(tokenfile).st_mode)[-3:] == "600")
+        check("the token file is outside the vault", outside(tokenfile, vault))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    p, second, log = start(vault, port + 1, keep)
+    try:
+        check("the same token comes back after a restart", second == first,
+              "%s vs %s" % (second, first))
+        check("the banner says the pairing survives", "stays paired" in log)
+        # The point of all this: a device that pasted the old token is still
+        # unlocked, without anyone reading the terminal again.
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % (port + 1)
+        code, _ = form(op, base, first)
+        s2, _ = call(op, base + "/api/notes")
+        check("the token from the previous run still unlocks", s2 == 200, str(s2))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    p, third, log = start(vault, port + 2, keep + ["--new-token"])
+    try:
+        check("--new-token issues a different one", third and third != first)
+        check("--new-token is what is now on disk",
+              open(tokenfile).read().strip() == third)
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % (port + 2)
+        form(op, base, first)
+        s2, _ = call(op, base + "/api/notes")
+        check("the old token is dead after --new-token", s2 == 403, str(s2))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+
+def test_cert_download(vault, port):
+    """/cert exists so a phone can install the certificate.
+
+    Unauthenticated on purpose -- it is the same public certificate the TLS
+    handshake already hands out. The test that matters is the one below it:
+    the private key must not come with it.
+    """
+    print("\ncertificate download")
+    if not shutil.which("openssl"):
+        print("  (skipped: openssl not on PATH)")
+        return
+    sd = tempfile.mkdtemp(prefix="cairn-test-certdl-", dir=STATE)
+    cert = os.path.join(sd, "certs", "server.crt")
+
+    p, token, log = start(vault, port, ["--lan", "--tls", "--state-dir", sd])
+    try:
+        # No token, no cookie: a device that cannot connect cleanly yet is
+        # exactly the one that needs this file.
+        op, _ = client(tls=True)
+        base = "https://127.0.0.1:%d" % port
+        code, body = call(op, base + "/cert")
+        check("/cert answers without a token", code == 200, str(code))
+        check("/cert returns a PEM certificate",
+              body.startswith("-----BEGIN CERTIFICATE-----"), body[:40])
+        check("/cert matches the cert on disk", body == open(cert).read())
+        check("/cert does not leak the private key", "PRIVATE KEY" not in body)
+        check("the banner points devices at /cert", "/cert" in log)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    p, token, log = start(vault, port + 1, ["--lan"])
+    try:
+        op, _ = client()
+        code, _ = call(op, "http://127.0.0.1:%d/cert" % (port + 1))
+        check("/cert is 404 without --tls", code == 404, str(code))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+
 def test_sync(vault, port):
     print("\nsync command")
 
@@ -835,6 +927,8 @@ def main():
         test_path_safety(vault, 8934)
         test_tls(vault, 8935)
         test_cert_names(vault, 8950)
+        test_token_persists(vault, 8955)
+        test_cert_download(vault, 8960)
         test_terminal(vault, 8936)
         test_sync(vault, 8937)
     finally:
