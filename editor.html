@@ -48,6 +48,12 @@ button{font:inherit;color:inherit}
 .btn:disabled{opacity:.45;cursor:default}
 .btn.danger:hover{border-color:var(--bad);color:var(--bad)}
 #list{flex:1;overflow-y:auto;padding:6px 0 30px}
+#sync{padding:10px 14px;border-top:1px solid var(--edge);
+  display:flex;flex-direction:column;gap:6px}
+#sync[hidden]{display:none}
+#syncInfo{font-size:11px;color:var(--dim);line-height:1.6}
+#syncInfo b{font-weight:600;color:var(--ink)}
+#syncInfo .bad{color:var(--bad);font-weight:600}
 .grp{padding:13px 16px 4px;font-size:10.5px;font-weight:700;letter-spacing:.06em;
   text-transform:uppercase;color:var(--dim)}
 .item{display:block;width:100%;text-align:left;padding:6px 16px;font-size:13.5px;
@@ -146,6 +152,17 @@ body.mode-edit #editWrap{border-right:0}
   #app{flex-direction:column}
   #side{width:100%;flex:0 0 auto;max-height:40vh;border-right:0;border-bottom:1px solid var(--edge)}
   body.mode-split #editWrap{display:none}
+  /* Stacked, the sidebar only gets 40vh, and a two-line sync block was tall
+     enough to push its own second line out through #side's overflow:hidden —
+     the next-sync time was rendered but invisible. Side by side it fits, and
+     the note list keeps the room it just gave up. */
+  #sync{flex-direction:row;align-items:center;gap:10px;padding:8px 14px}
+  #sync button{flex:0 0 auto}
+  #syncInfo{line-height:1.4}
+  /* Give the note list back the height the sync row costs it, but only where
+     there is a sync row — a cairn started without --sync-cmd keeps the
+     original 40vh. */
+  body[data-sync] #side{max-height:47vh}
 }
 </style>
 </head>
@@ -163,6 +180,10 @@ body.mode-edit #editWrap{border-right:0}
       </div>
     </div>
     <div id="list"></div>
+    <div id="sync" hidden>
+      <button class="btn" id="syncBtn">Sync now</button>
+      <div id="syncInfo"></div>
+    </div>
   </aside>
 
   <main id="main">
@@ -544,6 +565,97 @@ async function trashNote(){
   } catch (e){ setStatus(e.message, "error"); }
 }
 
+/* ----------------------------- sync ----------------------------- */
+/* The button is hidden unless the server was started with --sync-cmd, so a
+   plain cairn looks exactly as it did before.                              */
+
+const syncEl = $("sync"), syncBtn = $("syncBtn"), syncInfo = $("syncInfo");
+let SYNC = null;
+
+function rel(t){
+  const delta = t * 1000 - Date.now(), ahead = delta > 0;
+  const s = Math.abs(delta) / 1000;
+  let n, unit;
+  if (s < 45)         { return ahead ? "in a moment" : "just now"; }
+  else if (s < 3600)  { n = Math.round(s / 60);    unit = "minute"; }
+  else if (s < 86400) { n = Math.round(s / 3600);  unit = "hour"; }
+  else                { n = Math.round(s / 86400); unit = "day"; }
+  const phrase = n + " " + unit + (n === 1 ? "" : "s");
+  return ahead ? "in " + phrase : phrase + " ago";
+}
+
+function drawSync(){
+  const s = SYNC;
+  /* An attribute rather than a class: the Edit/Split/Preview buttons assign
+     body.className outright, which would silently drop a class set here. */
+  if (s && s.enabled) document.body.dataset.sync = "on";
+  else delete document.body.dataset.sync;
+  if (!s || !s.enabled){ syncEl.hidden = true; return; }
+  syncEl.hidden = false;
+  syncBtn.disabled = !!s.running;
+  syncBtn.textContent = s.running ? "Syncing…" : "Sync now";
+
+  /* A run started by the timer never passes through cairn, so its time comes
+     from systemd and the button's own runs come from the state file. Whichever
+     is more recent is the one that actually touched the notes.             */
+  const mine = s.last && s.last.at, theirs = s.timer_last;
+  const last = Math.max(mine || 0, theirs || 0) || null;
+  const failed = s.last && !s.last.ok && mine && mine >= (theirs || 0);
+
+  const bits = [];
+  if (last) bits.push("Last sync <b>" + esc(rel(last)) + "</b>" +
+                      (failed ? ' <span class="bad">— failed</span>' : ""));
+  else      bits.push("No sync yet");
+  if (s.next) bits.push("Next <b>" + esc(rel(s.next)) + "</b>");
+  syncInfo.innerHTML = bits.join("<br>");
+}
+
+async function refreshSync(){
+  try {
+    SYNC = (await api("/api/sync/status")).sync;
+  } catch (e){
+    SYNC = null;                         /* server too old, or not unlocked */
+  }
+  drawSync();
+}
+
+async function doSync(){
+  /* A sync rewrites notes on disk. Anything unsaved in the textarea would be
+     silently outrun by it, so make the user deal with that first.          */
+  if (dirty){
+    setStatus("save or discard your changes first — a sync can overwrite this note", "error");
+    return;
+  }
+  syncBtn.disabled = true;
+  syncBtn.textContent = "Syncing…";
+  setStatus("syncing…");
+  try {
+    const record = (await api("/api/sync", {method: "POST"})).sync;
+    /* The notes on disk may have changed underneath us, including the open
+       one. Not dirty, so reopening it cannot lose anything.                */
+    const was = current && current.path;
+    await reload();
+    if (was) open_(was);
+    /* After the reopen, never before: open_ clears the status line, which
+       would swallow the message this whole function exists to deliver.     */
+    if (record.ok){
+      setStatus("sync finished in " + record.seconds + "s", "saved");
+    } else {
+      /* The exit code alone tells the user nothing. The script's last line is
+         usually the reason it stopped, and is the only part of the output that
+         reaches the page at all.                                            */
+      const lines = (record.output || "").trim().split("\n").filter(l => l.trim());
+      const why = lines.length ? lines[lines.length - 1].slice(0, 140) : "";
+      setStatus("sync failed" + (record.code == null ? "" : " (exit " + record.code + ")")
+                + (why ? " — " + why : ""), "error");
+      if (record.output) console.error(record.output);
+    }
+  } catch (e){
+    setStatus(e.message, "error");
+  }
+  await refreshSync();
+}
+
 /* ---------------------------- boot ---------------------------- */
 async function reload(){
   const r = await api("/api/notes");
@@ -577,6 +689,11 @@ edEl.addEventListener("keydown", e => {
 });
 qEl.addEventListener("input", () => drawList(qEl.value));
 saveBtn.addEventListener("click", save);
+syncBtn.addEventListener("click", doSync);
+/* Re-render often enough that "in 25 minutes" stays honest, but only ask the
+   server every few minutes — each status call spawns a systemctl.          */
+setInterval(drawSync, 30 * 1000);
+setInterval(refreshSync, 5 * 60 * 1000);
 $("newBtn").addEventListener("click", openDialog);
 $("trashBtn").addEventListener("click", trashNote);
 $("dlgCancel").addEventListener("click", closeDialog);
@@ -623,6 +740,9 @@ window.addEventListener("beforeunload", e => {
     $("boot").remove();
     const readme = NOTES.find(n => n.path === "README.md") || NOTES[0];
     if (readme) open_(readme.path);
+    /* After the notes are up: the sidebar is usable without it, and it is the
+       one call that can spawn a subprocess on the server.                   */
+    refreshSync();
   } catch (e){
     $("boot").textContent = "Could not reach the notes server: " + e.message;
   }

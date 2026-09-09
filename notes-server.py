@@ -57,6 +57,7 @@ import socketserver
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import webbrowser
@@ -87,6 +88,25 @@ MIME = {
 
 TOKEN = secrets.token_urlsafe(24)
 COOKIE = "notes_session"
+
+# Optional sync command, enabled only by --sync-cmd. cairn neither knows nor
+# cares what the script does — it is the user's own, and pointing at one is an
+# explicit choice made at startup, the same shape as --vault.
+#
+# The reason this is safe to put behind a button: nothing from a request ever
+# reaches it. No arguments, no shell, no note content, no path — the command is
+# fixed when the server starts and run as a one-element argv list. A note is
+# text an attacker could have written; it never gets a say in what runs here.
+SYNC_CMD = None
+SYNC_TIMER = None
+SYNC_TIMEOUT = 900
+SYNC_STATE = os.path.join(
+    os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"),
+                                                     ".local", "state"),
+    "cairn", "sync.json")
+# Two syncs writing the vault at once would fight over the same files, and the
+# server is threaded, so concurrent presses are real.
+SYNC_LOCK = threading.Lock()
 
 
 # --------------------------------------------------------------------------
@@ -208,6 +228,81 @@ def touch_updated(text):
     else:
         fm = fm.rstrip("\n") + "\nupdated: " + today
     return "---\n" + fm + "\n---\n" + body
+
+
+# --------------------------------------------------------------------------
+# optional sync command
+# --------------------------------------------------------------------------
+
+def systemd_timer(unit):
+    """Next and last firing of a systemd --user timer, in epoch seconds.
+
+    Best effort on purpose: no systemd, no such unit, or a systemctl too old
+    for --output=json all mean "unknown" rather than an error the UI has to
+    render. list-timers is used rather than `show` because it reports raw
+    microseconds, where `show` formats the timestamp in the server's locale.
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "list-timers", unit, "--output=json", "--no-pager"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=5, text=True).stdout
+        rows = json.loads(out or "[]")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+
+    def seconds(v):
+        # Microseconds, with a huge sentinel stashed in the field for "never".
+        if isinstance(v, (int, float)) and 0 < v < 2 ** 62:
+            return v / 1e6
+        return None
+
+    for row in rows if isinstance(rows, list) else []:
+        if row.get("unit") == unit:
+            return {"next": seconds(row.get("next")), "last": seconds(row.get("last"))}
+    return {}
+
+
+def sync_status():
+    """Everything the sidebar shows: last run, next run, one in flight."""
+    last = None
+    try:
+        with open(SYNC_STATE, encoding="utf-8") as fh:
+            last = json.load(fh)
+    except (OSError, ValueError):
+        pass                                  # nothing has been recorded yet
+    info = {"enabled": bool(SYNC_CMD), "running": SYNC_LOCK.locked(),
+            "last": last, "next": None, "timer_last": None}
+    if SYNC_TIMER:
+        # A timer-driven run happens entirely outside cairn, so its time comes
+        # from systemd; only button-driven runs land in SYNC_STATE.
+        t = systemd_timer(SYNC_TIMER)
+        info["next"] = t.get("next")
+        info["timer_last"] = t.get("last")
+    return info
+
+
+def run_sync():
+    """Run the configured command and record what happened."""
+    started = time.time()
+    try:
+        proc = subprocess.run(
+            [SYNC_CMD],                       # argv list: no shell, no splitting
+            cwd=VAULT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=SYNC_TIMEOUT, text=True)
+        code, output = proc.returncode, proc.stdout or ""
+    except subprocess.TimeoutExpired:
+        code, output = None, "timed out after %d seconds" % SYNC_TIMEOUT
+    except OSError as e:
+        code, output = None, str(e)
+    record = {"at": started, "seconds": round(time.time() - started, 1),
+              "ok": code == 0, "code": code,
+              "output": output[-4000:]}       # a tail is all the UI shows
+    try:
+        atomic_write(SYNC_STATE, json.dumps(record))
+    except OSError:
+        pass                                  # a run that went unlogged still ran
+    return record
 
 
 # --------------------------------------------------------------------------
@@ -431,6 +526,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True, "notes": list_notes(),
                                         "images": list_images(), "vault": VAULT})
 
+        if path == "/api/sync/status":
+            if not self.authed():
+                return self.fail(403, "not unlocked")
+            return self.send_json(200, {"ok": True, "sync": sync_status()})
+
         if path.startswith("/media/"):
             if not self.authed():
                 return self.fail(403, "not unlocked")
@@ -508,6 +608,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True, "path": os.path.relpath(full, VAULT),
                                         "content": body, "mtime": os.path.getmtime(full)})
 
+        if route == "/api/sync":
+            if not SYNC_CMD:
+                return self.fail(404, "no sync command configured (see --sync-cmd)")
+            # Refuse rather than queue: a second sync on top of a running one
+            # would have two processes writing the same notes.
+            if not SYNC_LOCK.acquire(blocking=False):
+                return self.fail(409, "a sync is already running")
+            try:
+                record = run_sync()
+            finally:
+                SYNC_LOCK.release()
+            # The request succeeded even when the script failed; the client
+            # reads record["ok"] to tell those apart, so a failing sync gets a
+            # real message instead of a generic transport error.
+            return self.send_json(200, {"ok": True, "sync": record})
+
         if route == "/api/trash":
             try:
                 data = self.body_json()
@@ -546,13 +662,29 @@ def main():
     ap.add_argument("--vault", default=None,
                     help="path to the notes vault (default: $NOTES_VAULT, "
                          "else the folder containing this script's parent)")
+    ap.add_argument("--sync-cmd", default=None,
+                    help="script the Sync button runs, with no arguments and no "
+                         "shell (default: no button, and /api/sync is a 404)")
+    ap.add_argument("--sync-timer", default=None,
+                    help="systemd --user timer unit to read the next scheduled "
+                         "sync from, e.g. vault-sync.timer")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
 
-    global VAULT, CERT_DIR
+    global VAULT, CERT_DIR, SYNC_CMD, SYNC_TIMER
     if args.vault:
         VAULT = os.path.abspath(os.path.expanduser(args.vault))
     CERT_DIR = os.path.join(VAULT, ".certs")
+
+    if args.sync_cmd:
+        SYNC_CMD = os.path.abspath(os.path.expanduser(args.sync_cmd))
+        # Fail here rather than on the first button press, where the only
+        # symptom is a red toast in a browser.
+        if not os.path.isfile(SYNC_CMD):
+            sys.exit("--sync-cmd %s is not a file" % SYNC_CMD)
+        if not os.access(SYNC_CMD, os.X_OK):
+            sys.exit("--sync-cmd %s is not executable — chmod +x it" % SYNC_CMD)
+    SYNC_TIMER = args.sync_timer
 
     if not os.path.isdir(VAULT):
         sys.exit("vault not found at %s\n"
@@ -586,6 +718,8 @@ def main():
     print("\n  Notes editor")
     print("  vault : %s" % VAULT)
     print("  notes : %d" % len(list_notes()))
+    if SYNC_CMD:
+        print("  sync  : %s" % SYNC_CMD)
     print("  this machine : %s" % local)
     if exposed:
         for ip in addrs or ["<this machine's IP>"]:

@@ -72,13 +72,14 @@ def make_vault():
     return d
 
 
-def start(vault, port, extra=()):
+def start(vault, port, extra=(), env=None):
     # -u matters: the server's banner is short, so on a pipe it would sit in
     # stdio's buffer and the readline() below would block forever.
     p = subprocess.Popen(
         [sys.executable, "-u", SERVER, "--vault", vault, "--port", str(port),
          "--no-browser"] + list(extra),
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        env=env)
     log, token, deadline = [], None, time.time() + 15
     while time.time() < deadline:
         line = p.stdout.readline()
@@ -303,6 +304,112 @@ def test_tls(vault, port):
         p.terminate(); p.wait(timeout=5)
 
 
+def test_sync(vault, port):
+    print("\nsync command")
+
+    # Point the server's state file at a scratch directory. Without this the
+    # test would overwrite the real ~/.local/state/cairn/sync.json.
+    state = tempfile.mkdtemp(prefix="cairn-test-state-")
+    env = dict(os.environ, XDG_STATE_HOME=state)
+    marker = os.path.join(state, "ran.txt")
+
+    good = os.path.join(state, "sync-ok.sh")
+    with open(good, "w") as f:
+        f.write("#!/bin/sh\n"
+                "echo \"argc=$#\" > %s\n"
+                "echo \"args=$*\" >> %s\n"
+                "echo \"cwd=$PWD\" >> %s\n"
+                "echo synced\n" % (marker, marker, marker))
+    os.chmod(good, 0o755)
+
+    bad = os.path.join(state, "sync-bad.sh")
+    with open(bad, "w") as f:
+        f.write("#!/bin/sh\necho 'it went wrong' >&2\nexit 3\n")
+    os.chmod(bad, 0o755)
+
+    # --- off unless asked for ------------------------------------------
+    p, token, _ = start(vault, port, env=env)
+    try:
+        op, _jar = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        code, body = call(op, base + "/api/sync", data=b"", method="POST")
+        check("POST /api/sync is 404 without --sync-cmd", code == 404, code)
+        code, body = call(op, base + "/api/sync/status")
+        check("status reports disabled without --sync-cmd",
+              code == 200 and json.loads(body)["sync"]["enabled"] is False)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # --- refuses a command it cannot run, at startup --------------------
+    p, token, log = start(vault, port, extra=("--sync-cmd", os.path.join(state, "nope.sh")),
+                          env=env)
+    p.wait(timeout=10)
+    check("exits when --sync-cmd is missing", p.returncode != 0)
+
+    plain = os.path.join(state, "not-exec.sh")
+    with open(plain, "w") as f:
+        f.write("#!/bin/sh\ntrue\n")
+    os.chmod(plain, 0o644)
+    p, token, log = start(vault, port, extra=("--sync-cmd", plain), env=env)
+    p.wait(timeout=10)
+    check("exits when --sync-cmd is not executable", p.returncode != 0)
+
+    # --- enabled -------------------------------------------------------
+    p, token, _ = start(vault, port, extra=("--sync-cmd", good), env=env)
+    try:
+        op, _jar = client()
+        base = "http://127.0.0.1:%d" % port
+
+        # Auth first: this route runs a subprocess, so it must be behind the
+        # token like everything else.
+        code, _ = call(op, base + "/api/sync", data=b"", method="POST")
+        check("POST /api/sync refused when locked", code == 403, code)
+        code, _ = call(op, base + "/api/sync/status")
+        check("sync status refused when locked", code == 403, code)
+
+        form(op, base, token)
+
+        # The request body is attacker-shaped: if any of it reached the
+        # command line, argc would not be 0.
+        payload = json.dumps({"cmd": "rm -rf /", "args": ["--delete"],
+                              "path": "; touch /tmp/pwned"}).encode()
+        code, body = call(op, base + "/api/sync", data=payload, method="POST",
+                          headers={"Content-Type": "application/json"})
+        ok = code == 200 and json.loads(body)["sync"]["ok"] is True
+        check("sync runs the configured command", ok, code)
+
+        ran = open(marker).read() if os.path.isfile(marker) else ""
+        check("the command actually ran", "cwd=" in ran)
+        check("no arguments from the request reach it", "argc=0" in ran, ran.split("\n")[0])
+        check("it runs in the vault", "cwd=%s" % vault in ran)
+
+        code, body = call(op, base + "/api/sync/status")
+        st = json.loads(body)["sync"]
+        check("status reports enabled", st["enabled"] is True)
+        check("status records the last run", bool(st["last"]) and st["last"]["ok"] is True)
+        check("status has no next run without --sync-timer", st["next"] is None)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # --- a failing script is reported, not swallowed --------------------
+    p, token, _ = start(vault, port, extra=("--sync-cmd", bad), env=env)
+    try:
+        op, _jar = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        code, body = call(op, base + "/api/sync", data=b"", method="POST")
+        rec = json.loads(body)["sync"]
+        check("a failing sync still answers 200", code == 200, code)
+        check("a failing sync is marked not ok", rec["ok"] is False)
+        check("the exit code is passed through", rec["code"] == 3, rec["code"])
+        check("its output is kept for the user", "went wrong" in rec["output"])
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    shutil.rmtree(state, ignore_errors=True)
+
+
 # --------------------------------------------------------------------------
 
 def main():
@@ -316,6 +423,7 @@ def main():
         test_write(vault, 8933)
         test_path_safety(vault, 8934)
         test_tls(vault, 8935)
+        test_sync(vault, 8936)
     finally:
         shutil.rmtree(vault, ignore_errors=True)
 
