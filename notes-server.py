@@ -542,39 +542,163 @@ def open_terminal(command):
 # network / tls
 # --------------------------------------------------------------------------
 
+# Interface names another device on the network can never reach us through:
+# VPN tunnels, hypervisor and container bridges, virtual ethernet pairs.
+# Matched as prefixes.
+#
+# This list exists because of a real failure, not tidiness. lan_ips() used to
+# be a UDP connect() to a TEST-NET address, which reports whichever interface
+# owns the default route -- and a VPN owns the default route by design. With
+# ProtonVPN up, that returned the tunnel address, the certificate was pinned
+# to it, and no other machine on the LAN could validate the result. A down
+# libvirt bridge produces the same thing more quietly.
+VIRTUAL_IFACE_PREFIXES = (
+    "lo", "virbr", "vnet", "docker", "veth", "br-", "tun", "tap", "wg",
+    "proton", "utun", "vmnet", "vboxnet", "zt", "tailscale",
+)
+
+
+def enumerate_ipv4():
+    """[(interface, address)] for every configured IPv4 address on this box.
+
+    Shells out because the standard library has no portable way to enumerate
+    interfaces. getaddrinfo(gethostname()) is the usual stand-in and it is
+    not good enough -- on a stock Debian it answers 127.0.1.1 and nothing
+    else, which is exactly how the address list ended up empty and the
+    default-route probe ended up being the only source. `ip` covers Linux,
+    `ifconfig` covers macOS, and if neither answers the caller still has the
+    probe to fall back on.
+    """
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             timeout=5, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    if out:
+        # "3: wlan0    inet 10.0.0.87/24 brd 10.0.0.255 scope global ..."
+        found = []
+        for line in out.splitlines():
+            f = line.split()
+            if len(f) > 3 and "inet" in f:
+                found.append((f[1], f[f.index("inet") + 1].split("/")[0]))
+        return found
+
+    try:
+        out = subprocess.run(["ifconfig", "-a"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             timeout=5, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    # "en0: flags=8863<UP,...>" then an indented "\tinet 192.168.1.5 netmask ..."
+    found, iface = [], ""
+    for line in out.splitlines():
+        if line and not line[0].isspace():
+            iface = line.split(":")[0].split()[0]
+        f = line.split()
+        if iface and "inet" in f:
+            found.append((iface, f[f.index("inet") + 1]))
+    return found
+
+
 def lan_ips():
-    """Best-effort list of this machine's LAN addresses."""
-    ips = set()
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("192.0.2.1", 9))          # TEST-NET-1, never actually sent
-        ips.add(s.getsockname()[0])
-        s.close()
-    except OSError:
-        pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = info[4][0]
-            if not ip.startswith("127."):
-                ips.add(ip)
-    except OSError:
-        pass
+    """Every address another device on this network could reach us on.
+
+    All of them, deliberately, not the single "primary" one: with a VPN up
+    this machine has both a tunnel address and its real LAN address, and the
+    certificate has to cover whichever one the other device actually dials.
+    """
+    ips = {ip for iface, ip in enumerate_ipv4()
+           if not iface.startswith(VIRTUAL_IFACE_PREFIXES)
+           and not ip.startswith("127.")}
+    if not ips:
+        # Neither tool answered. Ask the kernel which source address reaches
+        # the internet: one address rather than all of them, and the VPN's
+        # when a VPN is up, but better than pinning the cert to nothing.
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("192.0.2.1", 9))      # TEST-NET-1, never actually sent
+            ips.add(s.getsockname()[0])
+            s.close()
+        except OSError:
+            pass
     return sorted(ips)
 
 
+def lan_names():
+    """Names the certificate should also answer to.
+
+    An IP-only certificate has to be regenerated every time DHCP moves the
+    machine, and every device that trusted it has to be told to trust it
+    again. The mDNS name does not move with the lease, so a device that
+    reaches cairn by name keeps working across one.
+    """
+    names = ["localhost"]
+    host = socket.gethostname().split(".")[0]
+    if host and host != "localhost":
+        names += [host, host + ".local"]
+    return names
+
+
+def cert_alt_names(cert):
+    """The subjectAltName entries already in a certificate, openssl-style."""
+    try:
+        out = subprocess.run(
+            ["openssl", "x509", "-in", cert, "-noout", "-ext", "subjectAltName"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=5, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    # The values follow a "X509v3 Subject Alternative Name:" header on the
+    # line above them. Left in, that header fuses onto the first value and
+    # the first name in every certificate reads as missing -- which means
+    # regenerating on every single start, and telling the user to re-trust
+    # the certificate on every device each time. There is a test for it.
+    out = out.split("Name:", 1)[-1]
+    got = set()
+    for part in out.replace("\n", " ").split(","):
+        part = part.strip()
+        # openssl prints "IP Address:10.0.0.87" but only accepts "IP:10.0.0.87".
+        if part.startswith("IP Address:"):
+            got.add("IP:" + part.split(":", 1)[1].strip())
+        elif part.startswith("DNS:"):
+            got.add("DNS:" + part.split(":", 1)[1].strip())
+    return got
+
+
 def ensure_cert(hosts):
-    """Self-signed cert in .certs/, regenerated if missing. Needs openssl."""
+    """Self-signed cert in .certs/, regenerated when it stops fitting.
+
+    Needs openssl.
+    """
     os.makedirs(CERT_DIR, exist_ok=True)
     cert = os.path.join(CERT_DIR, "server.crt")
     key = os.path.join(CERT_DIR, "server.key")
+
+    alt = ["DNS:%s" % n for n in lan_names()] + ["IP:127.0.0.1"]
+    for h in hosts:
+        if h[0].isdigit() and "IP:%s" % h not in alt:
+            alt.append("IP:%s" % h)
+
     if os.path.isfile(cert) and os.path.isfile(key):
-        return cert, key
+        # Deliberately not just "does the file exist". A certificate pinned to
+        # an address this machine no longer has is worse than none: the other
+        # device rejects the name outright and the failure reads as a network
+        # problem rather than a stale file. Missing names mean regenerate.
+        # Extra ones -- a VPN that happens to be down right now -- are fine and
+        # must not trigger a regeneration, or every connect/disconnect would
+        # invalidate the trust the user established on their phone.
+        missing = set(alt) - cert_alt_names(cert)
+        if not missing:
+            return cert, key
+        print("  certificate is missing %s — regenerating it."
+              % ", ".join(sorted(missing)))
+        print("  Devices that trusted the old one will have to trust this one.")
 
     if not shutil.which("openssl"):
         sys.exit("--tls needs the `openssl` command, which isn't on your PATH.\n"
                  "Install it (sudo apt install openssl) or run without --tls.")
 
-    alt = ["DNS:localhost", "IP:127.0.0.1"] + ["IP:%s" % h for h in hosts if h[0].isdigit()]
     print("  generating a self-signed certificate in .certs/ …")
     subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
@@ -995,6 +1119,13 @@ def main():
     if exposed:
         for ip in addrs or ["<this machine's IP>"]:
             print("  other devices: %s://%s:%d/" % (scheme, ip, args.port))
+        # The mDNS name outlives the DHCP lease the addresses above don't, so
+        # it is the one worth bookmarking on a phone. Offered rather than
+        # promised: it needs an mDNS responder here (avahi, or Bonjour on a
+        # Mac) that is publishing the real LAN interface.
+        mdns = [n for n in lan_names() if n.endswith(".local")]
+        for name in mdns:
+            print("  or, if mDNS works: %s://%s:%d/" % (scheme, name, args.port))
         print("\n  Token (paste it on the other device):\n\n      %s\n" % TOKEN)
         if args.tls:
             print("  Certificate is self-signed, so the browser will warn once.")

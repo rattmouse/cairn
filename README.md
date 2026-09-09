@@ -92,6 +92,23 @@ you open the plain URL and paste the token once; the server sets an
 URL, in history, or in the page source. Restarting the server invalidates
 every session.
 
+With `--tls` the certificate is self-signed, so a browser warns the first
+time. Rather than checking the printed fingerprint at every visit, install
+`.certs/server.crt` once as a trusted certificate on each device — macOS
+Keychain Access, or iOS Settings → General → VPN & Device Management,
+followed by Certificate Trust Settings. After that the device connects
+cleanly and you type nothing.
+
+The certificate covers `localhost`, `127.0.0.1`, this machine's mDNS name
+(`<hostname>.local`) and every non-virtual LAN address it has. VPN tunnels,
+libvirt bridges and container interfaces are deliberately excluded — an
+address only this machine can reach is worse than useless in a certificate.
+On start the server checks the existing certificate still covers all of
+those and regenerates it if not, so a new DHCP lease fixes itself. A
+regenerated certificate has to be trusted again on each device, which is
+why the mDNS name is in there: reach cairn by name and the lease can move
+without invalidating anything.
+
 ## What protects your files
 
 - Binds `127.0.0.1` unless `--lan` is passed explicitly.
