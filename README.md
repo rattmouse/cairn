@@ -43,6 +43,7 @@ the login token cross the network in the clear.
 | `--host ADDR` | Bind a specific address instead of `--lan`'s `0.0.0.0`. |
 | `--port N` | Default 8765. |
 | `--state-dir PATH` | Where backups, trash and the TLS cert go. Default: a per-vault folder under `~/.local/state/cairn/vaults/`. |
+| `--new-token` | Discard the saved token and issue a new one, logging out every device. |
 | `--no-browser` | Don't open a browser on start. |
 | `--terminal-cwd PATH` | Where "open in terminal" starts. Default `~/workspace`. |
 | `--no-terminal` | Never open a terminal window. |
@@ -86,20 +87,37 @@ startup banner names the one it will use.
 
 ## Access
 
-A token is generated fresh at every start and printed in the terminal.
-Opening the printed URL on the same machine logs you in. From another device
-you open the plain URL and paste the token once; the server sets an
-`HttpOnly; SameSite=Strict` session cookie and the token never appears in a
-URL, in history, or in the page source. Restarting the server invalidates
-every session.
+A token is generated on first run, kept in the state directory and printed
+in the terminal. Opening the printed URL on the same machine logs you in.
+From another device you open the plain URL and paste the token once; the
+server sets an `HttpOnly; SameSite=Strict` session cookie and the token
+never appears in a URL, in history, or in the page source.
 
-With `--tls` the certificate is self-signed, so a browser warns the first
-time. Rather than checking the printed fingerprint at every visit, install
-`certs/server.crt` from the state directory (the banner prints where that
-is) once as a trusted certificate on each device — macOS
-Keychain Access, or iOS Settings → General → VPN & Device Management,
-followed by Certificate Trust Settings. After that the device connects
-cleanly and you type nothing.
+The token survives a restart, so a device you pair once stays paired — you
+are not retyping it on the phone every time the server comes back. It lives
+at `token` in the state directory, mode `600` in a `700` directory, the same
+as the TLS private key beside it. `--new-token` throws it away and issues a
+fresh one, which logs out every device.
+
+With `--tls` the certificate is self-signed, so a browser warns until you
+install it. Do that once per device and the warning stops for good. On the
+device itself, open `/cert` on the server:
+
+```
+https://<address-or-name>:8765/cert
+```
+
+and trust the file it downloads — macOS Keychain Access, or iOS Settings →
+General → VPN & Device Management, followed by Certificate Trust Settings.
+The banner prints that URL, the path of the file on this machine, and the
+certificate's SHA-256 fingerprint; check the fingerprint before you trust
+it. After that the device connects cleanly and you type nothing.
+
+`/cert` needs no token. It serves the certificate the server already hands
+to anyone who opens a TLS connection to it, so it publishes nothing that
+connecting does not — and it is the only way onto a device that has no
+shell and no copy of the state directory. The private key is served by no
+route.
 
 The certificate covers `localhost`, `127.0.0.1`, this machine's mDNS name
 (`<hostname>.local`) and every non-virtual LAN address it has. VPN tunnels,
