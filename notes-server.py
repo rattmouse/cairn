@@ -51,6 +51,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import socketserver
@@ -220,17 +221,21 @@ def touch_updated(text):
 # still has to read it and press Enter. Nothing here ever runs the command.
 #
 # Two things keep that promise:
-#   * the command is never handed to a shell for evaluation. It reaches bash
-#     only as an environment variable, and the rcfile below expands it with
-#     plain parameter expansion, which bash does not re-scan for syntax.
-#   * it is inserted into the readline editing buffer by a key macro, and a
-#     macro types characters; it cannot press Return on the user's behalf.
+#   * the command is never handed to a shell for evaluation. It is written to
+#     a file and read back with $(cat), and the text a command substitution
+#     yields is never re-parsed as shell syntax.
+#   * it is put into the line editor, not the shell. bash gets a readline macro
+#     bound to the terminal's Device Status Report reply -- a macro types
+#     characters and cannot press Return on the user's behalf -- and zsh gets
+#     print -z, which pushes text onto the editing buffer stack for the next
+#     prompt to pop. If neither lands, nothing is typed and the command is
+#     still one Up-arrow away in history.
 #
-# The insertion uses an old readline trick: bind a macro to the terminal's
-# reply to a Device Status Report, then ask for one. The terminal answers
-# ESC[0n, readline sees the macro's key sequence, and types the command at the
-# first prompt. If a terminal never answers, nothing is typed and the command
-# is still one Up-arrow away in history.
+# Three shapes of machine to keep in mind here. Linux runs an emulator binary
+# and hands it a command. macOS opens an application, which means a file it can
+# be given, and means launchd in between -- so the environment does not carry
+# across, which is why the command travels as a file. And $SHELL decides which
+# rcfile is written, so a Mac gets zsh rather than a surprise bash prompt.
 
 TERMINAL_CWD = os.path.expanduser("~/workspace")
 TERMINAL_ENABLED = True
@@ -239,6 +244,8 @@ _TERMINAL = None                             # cached (name, flags), () for none
 # Emulator, then the flags meaning "start here" and "run this next". The cwd is
 # set on the spawned process too, but several emulators re-exec through a
 # launcher that would otherwise land in $HOME, so the explicit flag matters.
+# macOS is not in this table: there the terminal is an application, opened by
+# `open -a`, and flags is None to say so.
 TERMINALS = [
     ("ptyxis",              ["--working-directory={cwd}", "--"]),
     ("konsole",             ["--workdir", "{cwd}", "-e"]),
@@ -255,13 +262,29 @@ TERMINALS = [
     ("xterm",               ["-e"]),
 ]
 
-# Sourced by the throwaway bash session. $CAIRN_CMD is expanded but never
-# evaluated: the substitutions escape backslashes and quotes so the macro
-# definition stays well formed, and turn newlines into the readline sequence
-# for "insert a literal newline", so a multi-line block arrives as one
-# editable buffer instead of running a line at a time.
-TERMINAL_RC = r'''# written by cairn, deleted as soon as it is read
-rm -rf "$CAIRN_RC_DIR"
+# The script the emulator is actually given. It exists because macOS needs a
+# file it can hand to an application, and because `cd` here means the window
+# lands in the right place whatever the emulator does with its own flags.
+LAUNCHER = """#!/bin/sh
+cd __CWD__ 2>/dev/null || cd "$HOME"
+exec __SHELL__
+"""
+
+# Sourced by the throwaway shell. The command is read from a file rather than
+# passed in the environment because macOS `open` hands the application to
+# launchd, which does not carry the environment across -- and reading a file
+# with $(cat) is the same guarantee anyway: command substitution yields text,
+# and assigning that text to a variable never re-parses it as shell syntax.
+#
+# The bash version inserts the command with a readline macro bound to the
+# terminal's reply to a Device Status Report: ask for one, and the answer types
+# the command at the first prompt. The substitutions escape backslashes and
+# quotes so the macro definition stays well formed whatever the note contains,
+# and turn newlines into readline's "insert a literal newline", so a multi-line
+# block arrives as one editable buffer instead of running a line at a time.
+BASH_RC = r"""# written by cairn, deleted as soon as it is read
+CAIRN_CMD=$(cat __DIR__/cmd)
+rm -rf __DIR__
 [ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
 [ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
 __cairn=${CAIRN_CMD//\\/\\\\}
@@ -269,26 +292,88 @@ __cairn=${__cairn//\"/\\\"}
 __cairn=${__cairn//$'\n'/\\C-v\\C-j}
 bind '"\e[0n": "'"$__cairn"'"' 2>/dev/null && printf '\e[5n'
 history -s "$CAIRN_CMD"
-unset __cairn CAIRN_CMD CAIRN_RC_DIR
-'''
+unset __cairn CAIRN_CMD
+"""
+
+# zsh needs no trick: print -z pushes text onto the line editor's buffer stack
+# and the next prompt pops it in, ready to edit. -r stops print from reading
+# backslashes as escapes. Reached when $SHELL is zsh, which on macOS is the
+# default, so a Mac gets its own shell rather than a surprise bash prompt.
+# ZDOTDIR points zsh at the file above instead of the user's own, so nothing
+# they normally load happens by itself -- hence sourcing it here, in the order
+# zsh would have. The login shell matters on macOS specifically: /etc/zprofile
+# is where path_helper builds PATH, and a window without it would be missing
+# every tool the user installed.
+ZSH_RC = r"""# written by cairn, deleted as soon as it is read
+CAIRN_CMD=$(cat __DIR__/cmd)
+rm -rf __DIR__
+ZDOTDIR=$HOME
+[[ -f $HOME/.zshenv ]] && source $HOME/.zshenv
+[[ -o login && -f $HOME/.zprofile ]] && source $HOME/.zprofile
+[[ -f $HOME/.zshrc ]] && source $HOME/.zshrc
+print -rs -- "$CAIRN_CMD"
+print -rz -- "$CAIRN_CMD"
+unset CAIRN_CMD
+"""
 
 
 def find_terminal():
-    """First installed emulator, or None. $CAIRN_TERMINAL jumps the queue."""
+    """(name, flags) for the terminal to use, or None. flags is None on macOS,
+    where the terminal is an application rather than a binary taking a command.
+    $CAIRN_TERMINAL overrides both: a name here, an app name on a Mac."""
     global _TERMINAL
     if _TERMINAL is None:
         _TERMINAL = ()
         override = os.environ.get("CAIRN_TERMINAL")
-        table = ([(override, ["-e"])] if override else []) + TERMINALS
-        for name, flags in table:
-            if shutil.which(name):
-                _TERMINAL = (name, flags)
-                break
+        if sys.platform == "darwin":
+            _TERMINAL = (override or "Terminal", None)
+        else:
+            table = ([(override, ["-e"])] if override else []) + TERMINALS
+            for name, flags in table:
+                if shutil.which(name):
+                    _TERMINAL = (name, flags)
+                    break
     return _TERMINAL or None
 
 
 def terminal_ready():
     return bool(TERMINAL_ENABLED and find_terminal())
+
+
+def terminal_argv(name, flags, launcher, cwd):
+    """The emulator's command line. Separate from open_terminal so the macOS
+    shape can be checked on a machine that isn't one."""
+    if flags is None:
+        return ["open", "-a", name, launcher]
+    return [name] + [f.format(cwd=cwd) for f in flags] + [launcher]
+
+
+def shell_parts():
+    """(rc filename, rc template, how to exec the shell). Follows $SHELL, so a
+    Mac gets zsh and this machine gets bash, rather than either being told
+    which shell it prefers."""
+    if os.path.basename(os.environ.get("SHELL", "")) == "zsh" and shutil.which("zsh"):
+        return ".zshrc", ZSH_RC, "env ZDOTDIR=%s zsh -il"
+    return "rc.bash", BASH_RC, "bash --rcfile %s/rc.bash -i"
+
+
+def sweep_stale():
+    """A window closed before the shell read its rcfile leaves the directory
+    behind. Clear out any old enough to be certainly dead."""
+    tmp = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return
+    for name in names:
+        stale = os.path.join(tmp, name)
+        if not name.startswith("cairn-term-") or not os.path.isdir(stale):
+            continue
+        try:
+            if time.time() - os.path.getmtime(stale) > 600:
+                shutil.rmtree(stale, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def open_terminal(command):
@@ -298,32 +383,42 @@ def open_terminal(command):
         raise RuntimeError("no terminal emulator found on this machine")
     name, flags = found
     cwd = TERMINAL_CWD if os.path.isdir(TERMINAL_CWD) else os.path.expanduser("~")
+    sweep_stale()
 
-    # The rcfile holds no secrets, but the command is the user's business:
-    # mkdtemp is 0700, and the rcfile deletes itself the moment bash reads it.
-    # A window closed before bash got that far leaves one behind, so sweep any
-    # that are old enough to be certainly dead.
-    tmp = tempfile.gettempdir()
-    for stale in os.listdir(tmp):
-        old_dir = os.path.join(tmp, stale)
-        if stale.startswith("cairn-term-") and os.path.isdir(old_dir):
-            try:
-                if time.time() - os.path.getmtime(old_dir) > 600:
-                    shutil.rmtree(old_dir, ignore_errors=True)
-            except OSError:
-                pass
+    # None of this holds a secret, but the command is the user's business:
+    # mkdtemp is 0700, and the rcfile deletes the whole directory -- itself,
+    # the command, and the launcher -- the moment the shell reads it.
     rc_dir = tempfile.mkdtemp(prefix="cairn-term-")
-    rc = os.path.join(rc_dir, "rc.bash")
-    with open(rc, "w", encoding="utf-8") as fh:
-        fh.write(TERMINAL_RC)
+    quoted = shlex.quote(rc_dir)
+    rc_name, rc_body, shell = shell_parts()
+    files = {
+        "cmd": (command, 0o600),
+        rc_name: (rc_body.replace("__DIR__", quoted), 0o600),
+        "launch": (LAUNCHER.replace("__CWD__", shlex.quote(cwd))
+                           .replace("__SHELL__", shell % quoted), 0o700),
+    }
+    for fname, (body, mode) in files.items():
+        path = os.path.join(rc_dir, fname)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.chmod(path, mode)
 
-    argv = [name] + [f.format(cwd=cwd) for f in flags] + ["bash", "--rcfile", rc, "-i"]
-    env = dict(os.environ, CAIRN_CMD=command, CAIRN_RC_DIR=rc_dir)
+    launcher = os.path.join(rc_dir, "launch")
+    argv = terminal_argv(name, flags, launcher, cwd)
     try:
-        subprocess.Popen(argv, cwd=cwd, env=env, start_new_session=True,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-    except OSError as e:
+        if flags is None:
+            # `open` hands the app to launchd and returns straight away, so its
+            # exit status is the only chance to notice a missing application.
+            done = subprocess.run(argv, cwd=cwd, timeout=15,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if done.returncode != 0:
+                raise RuntimeError(done.stderr.decode("utf-8", "replace").strip()
+                                   or "could not open %s" % name)
+        else:
+            subprocess.Popen(argv, cwd=cwd, start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
         shutil.rmtree(rc_dir, ignore_errors=True)
         raise RuntimeError("could not start %s: %s" % (name, e))
     return name, cwd

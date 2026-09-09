@@ -54,17 +54,30 @@ the server, at `~/workspace`, with the command typed at the prompt and *not
 executed* — you still read it and press Enter yourself. Change where it opens
 with `--terminal-cwd`, or turn it off with `--no-terminal`.
 
-The command is never handed to a shell for evaluation. It reaches bash in an
-environment variable and is inserted into the line editor by a readline macro,
-which types characters and cannot press Return for you, so a code block full
-of quotes and semicolons arrives as text rather than as instructions. Multi-line
-blocks land as one editable buffer.
+The command is never handed to a shell for evaluation. It is written to a file
+and read back with `$(cat)`, and the text a command substitution yields is
+never re-parsed as shell syntax. It then goes into the *line editor* rather
+than the shell: under bash by a readline macro, which types characters and
+cannot press Return for you, and under zsh by `print -z`. So a code block full
+of quotes and semicolons arrives as text rather than as instructions.
+Multi-line blocks land as one editable buffer.
+
+`$SHELL` decides which — a Mac gets zsh, not a surprise bash prompt.
+
+On Linux the first installed emulator wins, in roughly desktop-native order
+(`konsole`, `gnome-terminal`, `kitty`, `alacritty`, … down to `xterm`). On
+macOS it opens Terminal.app. `$CAIRN_TERMINAL` overrides both — a binary name
+on Linux, an application name on macOS:
+
+```bash
+CAIRN_TERMINAL=iTerm python3 notes-server.py --vault ~/Documents/notes
+```
 
 The button only appears for shell-ish blocks (` ```bash `, ` ```sh `, or no
 language at all), only when the browser is on the same machine as the server —
 a phone on the LAN is still authenticated, but it isn't sitting in front of
-the screen the window would open on — and only if a terminal emulator is
-installed. `$CAIRN_TERMINAL` picks one explicitly.
+the screen the window would open on — and only if a terminal was found. The
+startup banner names the one it will use.
 
 ## Access
 

@@ -306,44 +306,61 @@ def test_tls(vault, port):
 # --------------------------------------------------------------------------
 # --------------------------------------------------------------------------
 # The terminal endpoint. No window is ever opened here: $CAIRN_TERMINAL points
-# the server at a shim that records what it was asked to launch. The last check
-# then runs the real rcfile under a pty and proves the command is typed rather
-# than executed, which is the whole promise of the feature.
+# the server at a shim that records what it was asked to launch. The pty checks
+# then run the real launcher script and prove the command is typed rather than
+# executed, which is the whole promise of the feature.
 
 SHIM = """#!/bin/bash
-{ echo "argv: $*"; echo "cwd: $PWD"; echo "cmd: $CAIRN_CMD"; } > "$CAIRN_RECORD"
+{ echo "argv: $*"; echo "cwd: $PWD"; echo "env-cmd: ${CAIRN_CMD-none}"; } > "$CAIRN_RECORD"
 for a in "$@"; do
-  [ -f "$a" ] && cp "$a" "$CAIRN_RECORD.rc"   # the rcfile deletes itself; keep a copy
+  [ -f "$a" ] && cp -R "$(dirname "$a")" "$CAIRN_RECORD.dir"   # it deletes itself later
 done
 """
 
 
-def wait_for(path, seconds=5):
-    """The server launches the terminal and answers; the shim writes a moment
-    later. Every check below reads that file, so wait for it to land."""
-    deadline = time.time() + seconds
+def load_server():
+    """Import notes-server.py, for the few things worth checking without HTTP."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cairn_server", SERVER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def launch(op, url, command, record):
+    """Ask the server to open a terminal; return what the shim caught."""
+    for f in (record, record + ".dir"):
+        shutil.rmtree(f, ignore_errors=True) if os.path.isdir(f) else None
+        if os.path.isfile(f):
+            os.remove(f)
+    s, b = call(op, url, data=json.dumps({"command": command}).encode(), method="POST",
+                headers={"Content-Type": "application/json"})
+    deadline = time.time() + 5
     while time.time() < deadline:
-        if os.path.exists(path) and os.path.getsize(path):
+        if os.path.exists(record) and os.path.getsize(record):
             time.sleep(0.1)
-            return True
+            break
         time.sleep(0.05)
-    return False
+    rec = open(record).read() if os.path.exists(record) else ""
+    argv = rec.split("\n")[0][len("argv: "):].split() if rec else []
+    return s, rec, (argv[-1] if argv else ""), record + ".dir"
 
 
-def typed_not_run(rc, command, home):
-    """Drive bash with the real rcfile through a pty. Returns what got typed."""
+def typed_not_run(launcher, home):
+    """Run the launcher the emulator was given, through a pty, as the emulator
+    would. Returns everything the shell drew on the screen."""
     import fcntl
     import pty
     import select
     import struct
     import termios
-    env = dict(os.environ, CAIRN_CMD=command, CAIRN_RC_DIR=os.path.join(home, "gone"),
-               HOME=home, TERM="xterm", PS1="$ ")
+    env = dict(os.environ, HOME=home, TERM="xterm", PS1="$ ")
+    env.pop("CAIRN_CMD", None)                      # nothing may depend on it
     pid, fd = pty.fork()
     if pid == 0:                                    # child: the shell under test
-        os.execvpe("bash", ["bash", "--rcfile", rc, "-i"], env)
+        os.execvpe(launcher, [launcher], env)
     # Wide window: readline wraps what it types at the terminal width, and a
-    # wrapped line would look like a different string to the check below.
+    # wrapped line would look like a different string to the checks below.
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 400, 0, 0))
     buf, deadline = b"", time.time() + 6
     while time.time() < deadline:
@@ -380,6 +397,14 @@ def test_terminal(vault, port):
     os.environ["CAIRN_TERMINAL"] = shim
     os.environ["CAIRN_RECORD"] = record
 
+    mod = load_server()
+    check("macOS opens an app rather than running a binary",
+          mod.terminal_argv("Terminal", None, "/tmp/t/launch", "/home/u")
+          == ["open", "-a", "Terminal", "/tmp/t/launch"])
+    check("elsewhere the emulator is given the launcher",
+          mod.terminal_argv("konsole", ["--workdir", "{cwd}", "-e"], "/tmp/t/launch", "/home/u")
+          == ["konsole", "--workdir", "/home/u", "-e", "/tmp/t/launch"])
+
     p, token, _ = start(vault, port, ["--terminal-cwd", vault])
     try:
         op, _ = client()
@@ -398,38 +423,45 @@ def test_terminal(vault, port):
         # A note is just text, and text can be hostile. This one tries to break
         # out of the quoting and run something; it must arrive as characters.
         nasty = 'foo"; touch %s/PWNED; echo "' % vault
-        s, b = call(op, url, data=json.dumps({"command": nasty}).encode(),
-                    method="POST", headers=hdr)
-        check("opens a terminal", s == 200 and json.loads(b)["ok"] is True)
-        check("the emulator was actually launched", wait_for(record))
-        rec = open(record).read() if os.path.exists(record) else ""
+        s, rec, launcher, copied = launch(op, url, nasty, record)
+        check("opens a terminal", s == 200)
+        check("the emulator was actually launched", bool(rec))
         check("launched at the requested directory", ("cwd: " + vault) in rec)
-        check("starts an interactive shell, runs no command", "bash --rcfile" in rec
-              and "-i" in rec and "-c" not in rec)
-        check("command travels in the environment, not argv",
-              ("cmd: " + nasty) in rec and nasty not in rec.split("cmd:")[0])
-        rc = record + ".rc"
-        body = open(rc).read() if os.path.exists(rc) else ""
-        check("command is not written into the rcfile", bool(body) and nasty not in body)
-        check("rcfile deleted itself from /tmp", not os.path.isdir("/tmp/cairn-term-x"))
+        check("emulator is given the launcher script", launcher.endswith("/launch"))
+        check("command is not in the emulator's argv", nasty not in rec.split("\n")[0])
+        check("command is not in the environment either", "env-cmd: none" in rec)
+
+        body = {f: open(os.path.join(copied, f)).read() for f in os.listdir(copied)}
+        check("launcher runs an interactive shell, no command",
+              "exec bash --rcfile" in body["launch"] and body["launch"].endswith("-i\n")
+              and " -c " not in body["launch"])
+        check("launcher starts in the requested directory", ("cd " + vault) in body["launch"])
+        check("command lives in its own file, verbatim", body["cmd"] == nasty)
+        check("command is not written into the rcfile", nasty not in body["rc.bash"])
+        check("nothing is left world-readable",
+              all(oct(os.stat(os.path.join(copied, f)).st_mode)[-3:] in ("600", "700")
+                  for f in body))
+
+        # The load-bearing one: run that launcher exactly as konsole would.
+        out = typed_not_run(launcher, home)
+        check("hostile command is typed, not run", not os.path.exists(vault + "/PWNED"))
+        check("hostile command arrives verbatim", nasty in re.sub(r"[\r\n]", "", out))
+        check("the shell cleaned up after itself", not os.path.isdir(os.path.dirname(launcher)))
+
+        s, _, launcher, _ = launch(op, url, "cd /tmp\nls -la", record)
+        out = typed_not_run(launcher, home)
+        check("multi-line block lands as one buffer",
+              "cd /tmp" in out and "ls -la" in out and "total " not in out)
 
         s, _ = call(op, url, data=b'{"command":"   "}', method="POST", headers=hdr)
         check("empty command refused", s == 400)
         s, _ = call(op, url, data=b'{"nope":1}', method="POST", headers=hdr)
         check("malformed body refused", s == 400)
-
-        # The load-bearing one: run that same rcfile for real.
-        out = typed_not_run(rc, nasty, home)
-        check("hostile command is typed, not run", not os.path.exists(vault + "/PWNED"))
-        check("hostile command arrives verbatim", nasty in re.sub(r"[\r\n]", "", out))
-        out = typed_not_run(rc, "cd /tmp\nls -la", home)
-        check("multi-line block lands as one buffer",
-              "cd /tmp" in out and "ls -la" in out and "total " not in out)
     finally:
         p.terminate(); p.wait(timeout=5)
-        for f in (record, record + ".rc"):
-            if os.path.exists(f):
-                os.remove(f)
+        shutil.rmtree(record + ".dir", ignore_errors=True)
+        if os.path.exists(record):
+            os.remove(record)
 
     p, token, _ = start(vault, port, ["--no-terminal"])
     try:
@@ -446,7 +478,6 @@ def test_terminal(vault, port):
         p.terminate(); p.wait(timeout=5)
         os.environ.pop("CAIRN_TERMINAL", None)
         os.environ.pop("CAIRN_RECORD", None)
-
 
 def main():
     if not os.path.isfile(SERVER):
