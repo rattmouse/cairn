@@ -37,8 +37,11 @@ Safety
   readable by anyone else on the same wifi.
 * Writes are atomic (temp file + os.replace), so an interrupted save can't
   leave a half-written note.
-* The previous version of every note you save is kept in .backups/.
-* Deleting moves the file to .trash/ -- nothing is actually unlinked.
+* The previous version of every note you save is kept in backups/, and
+  deleting moves the file to trash/ -- nothing is actually unlinked. Both
+  live in a per-vault state directory OUTSIDE the vault (see --state-dir),
+  so a vault in a sync folder doesn't upload every old version, and a
+  delete actually leaves the cloud. The TLS key lives there too.
 * Paths are resolved and checked against the vault root, so a crafted request
   can't read or write outside it, and only .md files can be written.
 """
@@ -72,7 +75,22 @@ EDITOR_HTML = os.path.join(HERE, "editor.html")
 #   --vault PATH  >  $NOTES_VAULT  >  the directory containing this script's parent
 # The last case is the "script still lives in the vault's bin/" layout.
 VAULT = os.path.abspath(os.environ.get("NOTES_VAULT") or os.path.join(HERE, os.pardir))
-CERT_DIR = os.path.join(VAULT, ".certs")
+
+# Where cairn keeps its own files: $XDG_STATE_HOME/cairn, i.e. ~/.local/state/cairn.
+STATE_HOME = os.path.join(
+    os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"),
+                                                     ".local", "state"),
+    "cairn")
+
+# Backups, trash and the TLS key are deliberately NOT written into the vault.
+# A vault in a sync folder (Proton Drive, iCloud, Dropbox) would otherwise
+# upload a copy of every old version on every save, keep "deleted" notes
+# synced forever, and — worst — mirror the TLS private key to the provider
+# and every linked device. So they go to a per-vault directory under
+# STATE_HOME, keyed on the vault's absolute path so two vaults can't collide.
+# --state-dir overrides it; set properly in main().
+STATE_DIR = None
+BACKUP_DIR = TRASH_DIR = CERT_DIR = None
 
 # The only non-hidden directory worth skipping. It is never notes, and a single
 # node_modules holds thousands of package README.md files — /api/notes ships
@@ -102,10 +120,7 @@ COOKIE = "notes_session"
 SYNC_CMD = None
 SYNC_TIMER = None
 SYNC_TIMEOUT = 900
-SYNC_STATE = os.path.join(
-    os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"),
-                                                     ".local", "state"),
-    "cairn", "sync.json")
+SYNC_STATE = os.path.join(STATE_HOME, "sync.json")
 # Two syncs writing the vault at once would fight over the same files, and the
 # server is threaded, so concurrent presses are real.
 SYNC_LOCK = threading.Lock()
@@ -146,8 +161,8 @@ def parse_frontmatter(text):
 def list_notes():
     out = []
     for root, dirs, files in os.walk(VAULT):
-        # Hidden directories cover this server's own .backups/, .trash/ and
-        # .certs/ as well as .git/ and .obsidian/. Beyond those, only
+        # Hidden directories cover .git/ and .obsidian/, plus a --state-dir
+        # someone chose to put back inside the vault. Beyond those, only
         # SKIP_DIRS is hidden from the vault — see the note on it above.
         dirs[:] = [d for d in dirs
                    if not d.startswith(".") and d not in SKIP_DIRS]
@@ -193,17 +208,82 @@ def list_images():
     return found
 
 
+def default_state_dir(vault):
+    """~/.local/state/cairn/vaults/<name>-<hash>: readable, and unique per path."""
+    key = hashlib.sha256(vault.encode("utf-8")).hexdigest()[:12]
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.basename(vault)) or "vault"
+    return os.path.join(STATE_HOME, "vaults", "%s-%s" % (name, key))
+
+
+def set_state_dir(path):
+    global STATE_DIR, BACKUP_DIR, TRASH_DIR, CERT_DIR
+    STATE_DIR = path
+    BACKUP_DIR = os.path.join(path, "backups")
+    TRASH_DIR = os.path.join(path, "trash")
+    CERT_DIR = os.path.join(path, "certs")
+
+
+def inside(path, root):
+    return path == root or path.startswith(root + os.sep)
+
+
+def stamped(base, full):
+    """<base>/<vault-relative dir>/<name>.<timestamp>.md — the same shape for
+    backups and trash, so two notes with one filename in different folders
+    can't land on top of each other."""
+    rel = os.path.relpath(full, VAULT)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = os.path.join(base, os.path.dirname(rel),
+                        "%s.%s.md" % (os.path.basename(rel)[:-3], stamp))
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    return dest
+
+
 def backup(full):
     """Keep the version we are about to overwrite."""
     if not os.path.isfile(full):
         return None
-    rel = os.path.relpath(full, VAULT)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    dest = os.path.join(VAULT, ".backups", os.path.dirname(rel),
-                        "%s.%s.md" % (os.path.basename(rel)[:-3], stamp))
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    dest = stamped(BACKUP_DIR, full)
     shutil.copy2(full, dest)
-    return os.path.relpath(dest, VAULT)
+    return dest
+
+
+def migrate_state():
+    """Vaults from before STATE_DIR existed have .backups/, .trash/ and
+    .certs/ inside them. Leaving those behind would be the bad outcome — a
+    .trash/ nobody looks at, still syncing, and a private key still in the
+    cloud — so on start they are moved into STATE_DIR. Merge, never
+    overwrite: anything already at the destination stays, and the old copy
+    stays put and gets reported rather than lost."""
+    if inside(STATE_DIR, VAULT):
+        return []
+    moved = []
+    for old_name, new_dir in ((".backups", BACKUP_DIR), (".trash", TRASH_DIR),
+                              (".certs", CERT_DIR)):
+        old = os.path.join(VAULT, old_name)
+        if not os.path.isdir(old):
+            continue
+        left = []
+        for root, dirs, files in os.walk(old, topdown=False):
+            for f in files:
+                src = os.path.join(root, f)
+                dst = os.path.join(new_dir, os.path.relpath(src, old))
+                if os.path.exists(dst):
+                    left.append(src)
+                    continue
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(src, dst)
+            for d in dirs:
+                try:
+                    os.rmdir(os.path.join(root, d))
+                except OSError:
+                    pass
+        try:
+            os.rmdir(old)
+        except OSError:
+            pass
+        moved.append((old, new_dir, left))
+    return moved
 
 
 def atomic_write(full, text):
@@ -563,7 +643,7 @@ def lan_ips():
 
 
 def ensure_cert(hosts):
-    """Self-signed cert in .certs/, regenerated if missing. Needs openssl."""
+    """Self-signed cert in CERT_DIR, regenerated if missing. Needs openssl."""
     os.makedirs(CERT_DIR, exist_ok=True)
     cert = os.path.join(CERT_DIR, "server.crt")
     key = os.path.join(CERT_DIR, "server.key")
@@ -575,7 +655,7 @@ def ensure_cert(hosts):
                  "Install it (sudo apt install openssl) or run without --tls.")
 
     alt = ["DNS:localhost", "IP:127.0.0.1"] + ["IP:%s" % h for h in hosts if h[0].isdigit()]
-    print("  generating a self-signed certificate in .certs/ …")
+    print("  generating a self-signed certificate in %s …" % CERT_DIR)
     subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
          "-keyout", key, "-out", cert, "-days", "825",
@@ -869,13 +949,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 full = safe_path(data["path"], must_exist=True)
             except (ValueError, KeyError, json.JSONDecodeError) as e:
                 return self.fail(400, str(e))
-            rel = os.path.relpath(full, VAULT)
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            dest = os.path.join(VAULT, ".trash",
-                                "%s.%s.md" % (os.path.basename(rel)[:-3], stamp))
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            dest = stamped(TRASH_DIR, full)
             shutil.move(full, dest)
-            return self.send_json(200, {"ok": True, "trashed": os.path.relpath(dest, VAULT)})
+            return self.send_json(200, {"ok": True, "trashed": dest})
 
         if route == "/api/terminal":
             # Opening a window is the one thing here that reaches outside the
@@ -926,6 +1002,10 @@ def main():
     ap.add_argument("--vault", default=None,
                     help="path to the notes vault (default: $NOTES_VAULT, "
                          "else the folder containing this script's parent)")
+    ap.add_argument("--state-dir", default=None,
+                    help="where backups/, trash/ and certs/ go (default: a "
+                         "per-vault directory under $XDG_STATE_HOME/cairn, "
+                         "i.e. ~/.local/state/cairn/vaults/<name>-<hash>)")
     ap.add_argument("--sync-cmd", default=None,
                     help="script the Sync button runs, with no arguments and no "
                          "shell (default: no button, and /api/sync is a 404)")
@@ -939,13 +1019,12 @@ def main():
                     help="refuse to open terminal windows at all")
     args = ap.parse_args()
 
-    global VAULT, CERT_DIR, SYNC_CMD, SYNC_TIMER, TERMINAL_CWD, TERMINAL_ENABLED
+    global VAULT, SYNC_CMD, SYNC_TIMER, TERMINAL_CWD, TERMINAL_ENABLED
     if args.vault:
         VAULT = os.path.abspath(os.path.expanduser(args.vault))
     if args.terminal_cwd:
         TERMINAL_CWD = os.path.abspath(os.path.expanduser(args.terminal_cwd))
     TERMINAL_ENABLED = not args.no_terminal
-    CERT_DIR = os.path.join(VAULT, ".certs")
 
     if args.sync_cmd:
         SYNC_CMD = os.path.abspath(os.path.expanduser(args.sync_cmd))
@@ -965,6 +1044,29 @@ def main():
         sys.exit("no markdown files under %s — is that the right vault?" % VAULT)
     if not os.path.isfile(EDITOR_HTML):
         sys.exit("editor.html not found next to this script")
+
+    if args.state_dir:
+        state = os.path.abspath(os.path.expanduser(args.state_dir))
+        # Inside the vault is allowed (it is how you get the old behaviour
+        # back) but only under a dot-directory, which the listing skips.
+        # Anywhere else in the vault, every backup would show up as a note.
+        if inside(state, VAULT):
+            rel = os.path.relpath(state, VAULT)
+            if rel == os.curdir or not rel.split(os.sep)[0].startswith("."):
+                sys.exit("--state-dir %s is inside the vault but not hidden — "
+                         "backups would be listed as notes.\n"
+                         "Use a dot-directory (e.g. %s) or somewhere outside."
+                         % (state, os.path.join(VAULT, ".cairn")))
+        if inside(VAULT, state):
+            sys.exit("--state-dir %s contains the vault" % state)
+        set_state_dir(state)
+    else:
+        set_state_dir(default_state_dir(VAULT))
+    try:
+        os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    except OSError as e:
+        sys.exit("could not create state directory %s — %s" % (STATE_DIR, e))
+    migrated = migrate_state()
 
     host = args.host or ("0.0.0.0" if args.lan else "127.0.0.1")
     exposed = host not in ("127.0.0.1", "localhost")
@@ -989,6 +1091,11 @@ def main():
     print("\n  Notes editor")
     print("  vault : %s" % VAULT)
     print("  notes : %d" % len(list_notes()))
+    print("  state : %s" % STATE_DIR)
+    for old, new, left in migrated:
+        print("  moved %s -> %s" % (old, new))
+        for src in left:
+            print("    left in place (already at destination): %s" % src)
     if SYNC_CMD:
         print("  sync  : %s" % SYNC_CMD)
     print("  this machine : %s" % local)
@@ -1004,7 +1111,7 @@ def main():
             print("  !! PLAIN HTTP ON THE NETWORK !!")
             print("  Your notes and this token cross the wire unencrypted and are")
             print("  readable by anyone else on this network. Restart with --tls.\n")
-    print("  Backups go to .backups/, deletes go to .trash/.")
+    print("  Backups go to backups/ and deletes to trash/ under the state directory.")
     if terminal_ready():
         print("  Code blocks open in %s at %s — typed, never run."
               % (find_terminal()[0], TERMINAL_CWD))
