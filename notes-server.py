@@ -107,6 +107,13 @@ MIME = {
     ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
 }
 
+# Not a release process, just a number that moves when the editor does, so a
+# screenshot, a bug report and a running server can be talked about as the
+# same thing. 0.1 was the three-pane editor; 0.2 drew its controls on canvas,
+# put the vault in a tree, the note in an outline and sync in a footer, and
+# added live mode.
+VERSION = "0.2.0"
+
 # A fallback only: main() replaces this with the token persisted in the
 # state directory. Generating it per process meant every restart logged
 # out every device and the token had to be typed on the phone again.
@@ -124,10 +131,19 @@ COOKIE = "notes_session"
 SYNC_CMD = None
 SYNC_TIMER = None
 SYNC_TIMEOUT = 900
-SYNC_STATE = os.path.join(STATE_HOME, "sync.json")
+SYNC_STATE = None                            # per vault; set in set_state_dir
 # Two syncs writing the vault at once would fight over the same files, and the
 # server is threaded, so concurrent presses are real.
 SYNC_LOCK = threading.Lock()
+
+# Everything cairn itself has run, newest last, for the activity panel in the
+# footer. In memory only: it is a view of this process's own actions, not a
+# record worth keeping across restarts, and the sync script's output can be
+# large enough that writing it down would be its own problem.
+RUN_LOG = []
+RUN_LOG_MAX = 600
+RUN_LOG_LOCK = threading.Lock()
+_run_seq = 0
 
 
 # --------------------------------------------------------------------------
@@ -220,11 +236,16 @@ def default_state_dir(vault):
 
 
 def set_state_dir(path):
-    global STATE_DIR, BACKUP_DIR, TRASH_DIR, CERT_DIR
+    global STATE_DIR, BACKUP_DIR, TRASH_DIR, CERT_DIR, SYNC_STATE
     STATE_DIR = path
     BACKUP_DIR = os.path.join(path, "backups")
     TRASH_DIR = os.path.join(path, "trash")
     CERT_DIR = os.path.join(path, "certs")
+    # Per vault, like everything else here. It was one shared file under
+    # STATE_HOME, which meant a failed sync of one vault was reported in the
+    # footer of another — invisible when this was a line of text in a sidebar,
+    # and a red dot now that it is not.
+    SYNC_STATE = os.path.join(path, "sync.json")
 
 
 def load_token(rotate=False):
@@ -347,6 +368,149 @@ def touch_updated(text):
 
 
 # --------------------------------------------------------------------------
+# what cairn has run
+# --------------------------------------------------------------------------
+#
+# One append-only buffer of lines, each with a sequence number. The page polls
+# with the highest number it has seen and gets only what is newer, so an open
+# activity panel costs one small response per poll no matter how long the sync
+# script has been talking.
+
+def log_run(text, kind="out"):
+    """Record one line for the activity panel. Returns its sequence number."""
+    global _run_seq
+    with RUN_LOG_LOCK:
+        _run_seq += 1
+        RUN_LOG.append({"n": _run_seq, "at": time.time(), "kind": kind,
+                        "text": text[:2000]})
+        del RUN_LOG[:-RUN_LOG_MAX]
+        return _run_seq
+
+
+def run_log_since(n):
+    """Lines newer than sequence number n, and the newest number there is."""
+    with RUN_LOG_LOCK:
+        return [e for e in RUN_LOG if e["n"] > n], _run_seq
+
+
+# --------------------------------------------------------------------------
+# git and the sync folder
+# --------------------------------------------------------------------------
+#
+# Both are read-only and both are inferred, never configured: if the vault is
+# in a git repository cairn reports on it, and if the vault sits inside a
+# provider's sync folder cairn names the provider. Nothing here writes, stages,
+# commits or pushes -- the footer is a window on the two systems that move
+# these notes around, not a second set of controls for them.
+
+GIT_TTL = 4.0                                # a poll every few seconds is free
+_git_cache = {"at": 0.0, "info": None}
+
+
+def _git(*args):
+    """One read-only git command in the vault. None if git cannot answer.
+
+    --no-optional-locks so that reading the status here can never collide with
+    a git command the user is running in a terminal on the same repository.
+    """
+    try:
+        p = subprocess.run(("git", "--no-optional-locks", "-C", VAULT) + args,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           timeout=5, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return None                          # no git installed, or it hung
+    return p.stdout.strip() if p.returncode == 0 else None
+
+
+def git_info():
+    """Branch, working-tree counts, distance from upstream, last commit."""
+    now = time.time()
+    if _git_cache["info"] is not None and now - _git_cache["at"] < GIT_TTL:
+        return _git_cache["info"]
+
+    top = _git("rev-parse", "--show-toplevel")
+    if not top:
+        info = {"repo": False}
+    else:
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        # The whole tree, not just the vault: a repository whose root is above
+        # the vault can be dirty in a way the vault alone would not show.
+        porcelain = _git("status", "--porcelain") or ""
+        changed = untracked = 0
+        for line in porcelain.splitlines():
+            if line.startswith("??"):
+                untracked += 1
+            elif line.strip():
+                changed += 1
+
+        upstream = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                        "@{upstream}")
+        ahead = behind = None
+        if upstream:
+            counts = _git("rev-list", "--left-right", "--count",
+                          "@{upstream}...HEAD")
+            if counts:
+                parts = counts.split()
+                if len(parts) == 2 and all(p.isdigit() for p in parts):
+                    behind, ahead = int(parts[0]), int(parts[1])
+
+        last = None
+        head = _git("log", "-1", "--format=%h%x1f%s%x1f%ct")   # empty repo: None
+        if head:
+            bits = head.split("\x1f")
+            if len(bits) == 3 and bits[2].isdigit():
+                last = {"short": bits[0], "subject": bits[1], "at": int(bits[2])}
+
+        info = {"repo": True, "root": top,
+                "branch": None if branch in (None, "HEAD") else branch,
+                "detached": branch == "HEAD",
+                "changed": changed, "untracked": untracked,
+                "clean": changed == 0 and untracked == 0,
+                "upstream": upstream, "ahead": ahead, "behind": behind,
+                "last": last}
+
+    _git_cache.update(at=now, info=info)
+    return info
+
+
+# Directory names a provider gives its sync folder. macOS File Provider names
+# come first; the plain names cover Linux clients and anyone who made the
+# folder themselves.
+CLOUD_DIRS = [
+    (re.compile(r"^ProtonDrive-(.+)-folder$"), "Proton Drive"),
+    (re.compile(r"^Proton\s?Drive$", re.I),    "Proton Drive"),
+    (re.compile(r"^com~apple~CloudDocs$"),     "iCloud Drive"),
+    (re.compile(r"^iCloud\s?Drive$", re.I),    "iCloud Drive"),
+    (re.compile(r"^Dropbox( .+)?$"),           "Dropbox"),
+]
+
+
+def cloud_info():
+    """Which provider's folder the vault is inside, if any.
+
+    Honest about its limits: this is path inspection and one stat. Proton
+    Drive on macOS is a File Provider extension with no public interface to
+    its upload queue, so cairn can say the folder is there and readable and
+    cannot say whether the last save has reached the cloud. The page says so
+    rather than implying a green light means uploaded.
+    """
+    path = VAULT
+    while True:
+        parent, name = os.path.split(path)
+        if not name:                          # walked past the filesystem root
+            return {"detected": False}
+        for pattern, provider in CLOUD_DIRS:
+            m = pattern.match(name)
+            if m:
+                account = m.group(1) if m.groups() else None
+                return {"detected": True, "provider": provider,
+                        "account": account, "root": path,
+                        "present": os.path.isdir(path),
+                        "inside": os.path.relpath(VAULT, path)}
+        path = parent
+
+
+# --------------------------------------------------------------------------
 # optional sync command
 # --------------------------------------------------------------------------
 
@@ -379,8 +543,12 @@ def systemd_timer(unit):
     return {}
 
 
+TIMER_TTL = 30.0
+_timer_cache = {"at": 0.0, "info": None}
+
+
 def sync_status():
-    """Everything the sidebar shows: last run, next run, one in flight."""
+    """Everything the footer shows: last run, next run, one in flight."""
     last = None
     try:
         with open(SYNC_STATE, encoding="utf-8") as fh:
@@ -391,29 +559,67 @@ def sync_status():
             "last": last, "next": None, "timer_last": None}
     if SYNC_TIMER:
         # A timer-driven run happens entirely outside cairn, so its time comes
-        # from systemd; only button-driven runs land in SYNC_STATE.
-        t = systemd_timer(SYNC_TIMER)
+        # from systemd; only button-driven runs land in SYNC_STATE. Cached
+        # because every miss spawns a systemctl, and the footer asks for this
+        # far more often than a timer's schedule can change.
+        now = time.time()
+        if _timer_cache["info"] is None or now - _timer_cache["at"] >= TIMER_TTL:
+            _timer_cache.update(at=now, info=systemd_timer(SYNC_TIMER))
+        t = _timer_cache["info"]
         info["next"] = t.get("next")
         info["timer_last"] = t.get("last")
     return info
 
 
 def run_sync():
-    """Run the configured command and record what happened."""
+    """Run the configured command and record what happened.
+
+    Read line by line rather than collected at the end, so the activity panel
+    fills as the script talks instead of staying empty until it is done. The
+    timeout is a timer that kills the process: a script that prints nothing
+    and hangs would never come back through the reader on its own.
+    """
     started = time.time()
+    log_run(SYNC_CMD, "start")
+    lines = []
+    code = None
+    timed_out = []
+
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [SYNC_CMD],                       # argv list: no shell, no splitting
             cwd=VAULT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=SYNC_TIMEOUT, text=True)
-        code, output = proc.returncode, proc.stdout or ""
-    except subprocess.TimeoutExpired:
-        code, output = None, "timed out after %d seconds" % SYNC_TIMEOUT
+            text=True, bufsize=1)
     except OSError as e:
-        code, output = None, str(e)
+        lines.append(str(e))
+        log_run(str(e), "err")
+    else:
+        killer = threading.Timer(SYNC_TIMEOUT,
+                                 lambda: (timed_out.append(True), proc.kill()))
+        killer.start()
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                lines.append(line)
+                log_run(line, "out")
+            code = proc.wait()
+        finally:
+            killer.cancel()
+            proc.stdout.close()
+        if timed_out:
+            code = None                       # killed, so its exit code is noise
+            lines.append("timed out after %d seconds" % SYNC_TIMEOUT)
+            log_run(lines[-1], "err")
+
+    output = "\n".join(lines)
     record = {"at": started, "seconds": round(time.time() - started, 1),
               "ok": code == 0, "code": code,
               "output": output[-4000:]}       # a tail is all the UI shows
+    log_run("finished in %ss%s" % (record["seconds"],
+                                   "" if record["ok"] else
+                                   " — failed" if code is None else
+                                   " — exit %d" % code),
+            "end" if record["ok"] else "err")
     try:
         atomic_write(SYNC_STATE, json.dumps(record))
     except OSError:
@@ -885,7 +1091,7 @@ INSECURE_WARN = ('<div class="warn">This connection is plain HTTP. Anyone else o
 # --------------------------------------------------------------------------
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "notes-server"
+    server_version = "cairn/" + VERSION
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -1007,6 +1213,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.authed():
                 return self.fail(403, "not unlocked")
             return self.send_json(200, {"ok": True, "sync": sync_status()})
+
+        if path == "/api/status":
+            # Everything the footer draws, in one request: the sync command,
+            # the git repository, and the provider folder the vault is in.
+            if not self.authed():
+                return self.fail(403, "not unlocked")
+            return self.send_json(200, {"ok": True, "version": VERSION,
+                                        "sync": sync_status(),
+                                        "git": git_info(), "cloud": cloud_info()})
+
+        if path == "/api/run/log":
+            if not self.authed():
+                return self.fail(403, "not unlocked")
+            try:
+                since = int((urllib.parse.parse_qs(url.query).get("since")
+                             or ["0"])[0])
+            except ValueError:
+                since = 0
+            lines, seq = run_log_since(since)
+            return self.send_json(200, {"ok": True, "lines": lines, "seq": seq,
+                                        "running": SYNC_LOCK.locked()})
 
         if path == "/cert":
             # Deliberately unauthenticated, and deliberately the .crt alone.
@@ -1156,6 +1383,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except RuntimeError as e:
                 return self.fail(503, str(e))
             self.log_message("opened %s in %s (not run)", name, cwd)
+            # Worth a line in the activity panel: it is the other thing cairn
+            # does to the machine. Only the first line, and only as far as the
+            # first newline -- the panel is a record that it happened, not a
+            # second copy of the code block.
+            first = command.strip().splitlines()[0]
+            log_run("%s: %s%s" % (name, first[:120],
+                                  " …" if len(command.strip()) > len(first[:120]) else ""),
+                    "term")
             return self.send_json(200, {"ok": True, "terminal": name, "cwd": cwd})
 
         return self.fail(404, "no such endpoint")
@@ -1186,6 +1421,7 @@ def main():
                     help="where backups/, trash/ and certs/ go (default: a "
                          "per-vault directory under $XDG_STATE_HOME/cairn, "
                          "i.e. ~/.local/state/cairn/vaults/<name>-<hash>)")
+    ap.add_argument("--version", action="version", version="cairn " + VERSION)
     ap.add_argument("--new-token", action="store_true",
                     help="discard the saved token and generate a fresh one, "
                          "logging out every device that had been paired")
@@ -1272,7 +1508,7 @@ def main():
 
     local = "%s://127.0.0.1:%d/?token=%s" % (scheme, args.port, TOKEN)
 
-    print("\n  Notes editor")
+    print("\n  cairn %s" % VERSION)
     print("  vault : %s" % VAULT)
     print("  notes : %d" % len(list_notes()))
     print("  state : %s" % STATE_DIR)

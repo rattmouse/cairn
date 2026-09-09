@@ -21,6 +21,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -708,6 +709,166 @@ def test_sync(vault, port):
 
 
 # --------------------------------------------------------------------------
+def test_status(vault, port):
+    """The footer's own endpoints: /api/status and the activity log."""
+    print("\nstatus and activity")
+
+    state = tempfile.mkdtemp(prefix="cairn-test-state-")
+    env = dict(os.environ, XDG_STATE_HOME=state)
+
+    # A script that says three things with a pause in the middle, so the log
+    # can be watched filling up rather than arriving all at once at the end.
+    talker = os.path.join(state, "talks.sh")
+    with open(talker, "w") as f:
+        f.write("#!/bin/sh\necho first\nsleep 2\necho second\n")
+    os.chmod(talker, 0o755)
+
+    p, token, log = start(vault, port, extra=("--sync-cmd", talker), env=env)
+    where = state_dir(log)
+    try:
+        op, _jar = client()
+        base = "http://127.0.0.1:%d" % port
+
+        code, _ = call(op, base + "/api/status")
+        check("/api/status refused when locked", code == 403, code)
+        code, _ = call(op, base + "/api/run/log")
+        check("/api/run/log refused when locked", code == 403, code)
+
+        form(op, base, token)
+
+        code, body = call(op, base + "/api/status")
+        st = json.loads(body) if code == 200 else {}
+        check("/api/status answers", code == 200, code)
+        check("it carries all three sections",
+              all(k in st for k in ("sync", "git", "cloud")))
+        check("and the version the page shows in its footer",
+              re.match(r"^\d+\.\d+\.\d+$", st.get("version") or ""), st.get("version"))
+        # The temp vault is not a repository and not in anyone's sync folder.
+        # Both are "no", and saying so is the point -- a missing key would
+        # leave the footer unable to tell absent from broken.
+        check("git reports no repository", st.get("git", {}).get("repo") is False,
+              st.get("git"))
+        check("no sync folder is detected",
+              st.get("cloud", {}).get("detected") is False, st.get("cloud"))
+
+        code, body = call(op, base + "/api/run/log")
+        log = json.loads(body)
+        check("the log starts empty", log["lines"] == [] and log["seq"] == 0)
+        check("nothing is running", log["running"] is False)
+
+        # --- a run is visible while it is still going ------------------
+        done = []
+        def press():
+            done.append(call(op, base + "/api/sync", data=b"", method="POST"))
+        t = threading.Thread(target=press)
+        t.start()
+
+        seen, running, deadline = [], False, time.time() + 8
+        while time.time() < deadline and not done:
+            code, body = call(op, base + "/api/run/log?since=0")
+            r = json.loads(body)
+            seen = [l["text"] for l in r["lines"]]
+            running = running or r["running"]
+            if "first" in seen:
+                break
+            time.sleep(0.2)
+
+        check("the first line arrives before the command ends",
+              "first" in seen and not done, "lines=%s finished=%s" % (seen, bool(done)))
+        check("a run in flight is reported as running", running)
+        t.join(timeout=20)
+
+        code, body = call(op, base + "/api/run/log?since=0")
+        r = json.loads(body)
+        texts = [l["text"] for l in r["lines"]]
+        kinds = [l["kind"] for l in r["lines"]]
+        check("both lines are in the log", "first" in texts and "second" in texts, texts)
+        check("the command itself opens the log", kinds and kinds[0] == "start", kinds)
+        check("the run is marked finished", "end" in kinds, kinds)
+        check("nothing is running afterwards", r["running"] is False)
+
+        # --- since= is what keeps a poll small -------------------------
+        newest = r["seq"]
+        code, body = call(op, base + "/api/run/log?since=%d" % newest)
+        check("since= returns only what is newer", json.loads(body)["lines"] == [])
+        code, body = call(op, base + "/api/run/log?since=nonsense")
+        check("a junk since= is treated as 0",
+              len(json.loads(body)["lines"]) == len(texts), code)
+
+        code, body = call(op, base + "/api/status")
+        check("the finished run reaches /api/status",
+              json.loads(body)["sync"]["last"]["ok"] is True)
+
+        # One shared file would mean a failed sync of one vault showing up in
+        # another vault's footer.
+        check("the record is kept per vault",
+              os.path.isfile(os.path.join(where, "sync.json")), where)
+        check("not in one file shared by every vault",
+              not os.path.isfile(os.path.join(state, "cairn", "sync.json")))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    shutil.rmtree(state, ignore_errors=True)
+
+
+def test_status_in_repo(vault, port):
+    """A vault that is inside a git repository, and inside a sync folder."""
+    print("\nstatus in a repo")
+
+    if not shutil.which("git"):
+        check("git is installed to test against", False, "skipped")
+        return
+
+    # The provider folder is a directory name, so a fake one is a real test:
+    # this is exactly what cairn looks at on a machine with the real client.
+    home = tempfile.mkdtemp(prefix="cairn-test-cloud-")
+    cloud = os.path.join(home, "ProtonDrive-someone@proton.me-folder")
+    repo = os.path.join(cloud, "vault")
+    os.makedirs(repo)
+    with open(os.path.join(repo, "Note.md"), "w") as f:
+        f.write("# Note\n")
+    git = ("git", "-C", repo)
+    quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(git + ("init", "-q"), **quiet)
+    subprocess.run(git + ("config", "user.email", "t@example.com"), **quiet)
+    subprocess.run(git + ("config", "user.name", "Test"), **quiet)
+    subprocess.run(git + ("add", "-A"), **quiet)
+    subprocess.run(git + ("commit", "-qm", "First note"), **quiet)
+    with open(os.path.join(repo, "Note.md"), "a") as f:
+        f.write("\nEdited since the commit.\n")
+    with open(os.path.join(repo, "Fresh.md"), "w") as f:
+        f.write("# Fresh\n")
+
+    p, token, _ = start(repo, port)
+    try:
+        op, _jar = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        st = json.loads(call(op, base + "/api/status")[1])
+
+        g = st["git"]
+        check("the repository is found", g["repo"] is True)
+        check("the branch is named", bool(g["branch"]), g.get("branch"))
+        check("a modified note is counted", g["changed"] == 1, g["changed"])
+        check("a new note is counted separately", g["untracked"] == 1, g["untracked"])
+        check("a dirty tree is not clean", g["clean"] is False)
+        check("there is no upstream to be ahead of", g["upstream"] is None)
+        check("the last commit is reported", g["last"]["subject"] == "First note",
+              g.get("last"))
+
+        c = st["cloud"]
+        check("the sync folder is detected", c["detected"] is True)
+        check("the provider is named", c["provider"] == "Proton Drive", c.get("provider"))
+        check("the account is read off the folder",
+              c["account"] == "someone@proton.me", c.get("account"))
+        check("the folder is there", c["present"] is True)
+        check("where the vault sits inside it", c["inside"] == "vault", c.get("inside"))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    shutil.rmtree(home, ignore_errors=True)
+
+
 # --------------------------------------------------------------------------
 # The terminal endpoint. No window is ever opened here: the server is pointed
 # at a shim that records what it was asked to launch. On Linux $CAIRN_TERMINAL
@@ -931,6 +1092,8 @@ def main():
         test_cert_download(vault, 8960)
         test_terminal(vault, 8936)
         test_sync(vault, 8937)
+        test_status(vault, 8938)
+        test_status_in_repo(vault, 8939)
     finally:
         shutil.rmtree(vault, ignore_errors=True)
         shutil.rmtree(STATE, ignore_errors=True)

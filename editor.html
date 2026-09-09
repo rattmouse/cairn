@@ -61,11 +61,16 @@ button,input,select,textarea{font:inherit;color:inherit}
 ::-webkit-scrollbar-thumb:hover{background:var(--faint);border:3px solid transparent;
   background-clip:content-box}
 
-#app{display:flex;height:100vh}
+/* Three columns over one footer. The columns scroll; the page never does. */
+#app{display:flex;flex-direction:column;height:100vh}
+#shell{flex:1;display:flex;min-height:0}
 
-/* ---------------------------- sidebar ---------------------------- */
+/* ------------------------- the side panels ------------------------- */
 #side{width:292px;flex:0 0 292px;background:var(--panel);
   border-right:1px solid var(--edge);display:flex;flex-direction:column;overflow:hidden}
+/* Attributes, like the mode: nothing here may depend on body.className. */
+body[data-left="off"] #side{display:none}
+body[data-right="off"] #outline{display:none}
 #brand{padding:13px 14px 12px;display:flex;align-items:center;gap:10px}
 #mark{width:26px;height:30px;flex:0 0 26px;display:block}
 #brand .wm{display:flex;flex-direction:column;line-height:1.15;margin-right:auto}
@@ -116,15 +121,27 @@ button,input,select,textarea{font:inherit;color:inherit}
 .item mark{background:var(--accent-soft);color:var(--accent);
   border-radius:3px;padding:0 1px;font-weight:700}
 .item.on mark{background:transparent}
+/* Folders are the same row as notes, one twisty column wider, so a folder
+   name and a note title at the same depth share a left edge. */
+.item .tw{flex:0 0 11px;font-size:8px;color:var(--faint);text-align:center;
+  transition:transform .12s}
+.item.shut .tw{transform:rotate(-90deg)}
+.item .ct{font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
+.item.dir{font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--dim)}
+.item.dir:hover{color:var(--ink)}
 .empty{padding:22px 16px;font-size:12.5px;color:var(--faint);text-align:center;line-height:1.7}
 
-#sync{padding:10px 14px;border-top:1px solid var(--edge);display:flex;align-items:center;gap:10px}
+/* The sync block lives in the footer now, laid out along it rather than down
+   the sidebar. The dial is unchanged: it still shows how far through the wait
+   between runs you are. */
+#sync{display:flex;align-items:center;gap:8px;min-width:0}
 #sync[hidden]{display:none}
-#dial{width:30px;height:30px;flex:0 0 30px;display:block}
-#syncInfo{font-size:11px;color:var(--dim);line-height:1.55;flex:1;min-width:0}
+#dial{width:22px;height:22px;flex:0 0 22px;display:block}
+#syncInfo{font-size:11.5px;color:var(--dim);line-height:1.4;min-width:0;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
 #syncInfo b{font-weight:600;color:var(--ink)}
 #syncInfo .bad{color:var(--bad);font-weight:600}
-#syncBtn{padding:5px 9px;font-size:11.5px}
+#syncBtn{padding:4px 9px;font-size:11.5px}
 
 /* ------------------------------ main ------------------------------ */
 #main{flex:1;display:flex;flex-direction:column;min-width:0}
@@ -143,14 +160,15 @@ button,input,select,textarea{font:inherit;color:inherit}
 #status.dirty{color:var(--accent)}
 #status.saved{color:var(--ok)}
 #status.error{color:var(--bad);font-weight:600}
-#seg{width:186px;height:30px;flex:0 0 186px;display:block;border-radius:var(--r);cursor:pointer}
+#seg{width:236px;height:30px;flex:0 0 236px;display:block;border-radius:var(--r);cursor:pointer}
 
 #panes{flex:1;display:flex;min-height:0;position:relative}
-#editWrap,#viewWrap{min-width:0;position:relative;flex:1 1 0}
+#editWrap,#viewWrap,#liveWrap{min-width:0;position:relative;flex:1 1 0}
 #editWrap{display:none}
-#viewWrap{display:none;overflow:auto}
+#viewWrap,#liveWrap{display:none;overflow:auto}
 body[data-mode="edit"] #editWrap{display:block}
 body[data-mode="view"] #viewWrap{display:block}
+body[data-mode="live"] #liveWrap{display:block}
 body[data-mode="split"] #editWrap,body[data-mode="split"] #viewWrap{display:block}
 body[data-mode="split"] #editWrap{flex:0 0 var(--split,50%)}
 #grip{display:none;flex:0 0 9px;cursor:col-resize;background:var(--bg);
@@ -168,34 +186,34 @@ body.resizing{cursor:col-resize;user-select:none}
 #map{position:absolute;top:0;right:0;width:22px;height:100%;display:block;
   cursor:pointer;opacity:.85;transition:opacity .15s;touch-action:none}
 #map:hover{opacity:1}
-#view{max-width:760px;margin:0 auto;padding:30px 34px 40vh}
+#view,#live{max-width:760px;margin:0 auto;padding:30px 34px 40vh}
 
 /* ------------------------ rendered markdown ------------------------ */
-#view h1{font-size:26px;line-height:1.25;margin:32px 0 14px;padding-bottom:7px;
+.md h1{font-size:26px;line-height:1.25;margin:32px 0 14px;padding-bottom:7px;
   border-bottom:1px solid var(--edge);letter-spacing:-.01em}
-#view h1:first-child{margin-top:0}
-#view h2{font-size:19px;margin:30px 0 10px;letter-spacing:-.005em}
-#view h3{font-size:12px;margin:24px 0 8px;color:var(--dim);font-weight:700;
+.md h1:first-child{margin-top:0}
+.md h2{font-size:19px;margin:30px 0 10px;letter-spacing:-.005em}
+.md h3{font-size:12px;margin:24px 0 8px;color:var(--dim);font-weight:700;
   text-transform:uppercase;letter-spacing:.08em}
-#view p{margin:0 0 13px}
-#view ul,#view ol{margin:0 0 13px;padding-left:24px}
-#view li{margin:3px 0}
-#view li::marker{color:var(--faint)}
-#view li.task{list-style:none;margin-left:-21px}
-#view li.task canvas{width:15px;height:15px;display:inline-block;vertical-align:-3px;
+.md p{margin:0 0 13px}
+.md ul,.md ol{margin:0 0 13px;padding-left:24px}
+.md li{margin:3px 0}
+.md li::marker{color:var(--faint)}
+.md li.task{list-style:none;margin-left:-21px}
+.md li.task canvas{width:15px;height:15px;display:inline-block;vertical-align:-3px;
   margin-right:7px;cursor:pointer;border-radius:5px}
-#view li.task canvas:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-#view li.task.done>span{color:var(--dim);text-decoration:line-through;
+.md li.task canvas:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.md li.task.done>span{color:var(--dim);text-decoration:line-through;
   text-decoration-color:var(--faint)}
-#view a{color:var(--accent);text-underline-offset:2px}
-#view hr{border:0;border-top:1px solid var(--edge);margin:26px 0}
-#view blockquote{margin:0 0 13px;padding:2px 0 2px 15px;border-left:3px solid var(--edge);
+.md a{color:var(--accent);text-underline-offset:2px}
+.md hr{border:0;border-top:1px solid var(--edge);margin:26px 0}
+.md blockquote{margin:0 0 13px;padding:2px 0 2px 15px;border-left:3px solid var(--edge);
   color:var(--dim)}
-#view code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+.md code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
   background:var(--code-bg);padding:1.5px 5px;border-radius:5px}
-#view pre{background:var(--code-bg);border:1px solid var(--edge-soft);border-radius:10px;
+.md pre{background:var(--code-bg);border:1px solid var(--edge-soft);border-radius:10px;
   padding:13px 15px;overflow-x:auto;margin:0}
-#view pre code{background:none;padding:0;font-size:12.5px;line-height:1.6}
+.md pre code{background:none;padding:0;font-size:12.5px;line-height:1.6}
 .cb{position:relative;margin:0 0 16px}
 .cb .cbtools{position:absolute;top:6px;right:6px;display:flex;gap:4px;padding:3px;
   background:var(--panel);border:1px solid var(--edge);border-radius:9px;
@@ -210,12 +228,12 @@ body.resizing{cursor:col-resize;user-select:none}
 .cbtools button:hover{border-color:var(--accent);color:var(--accent)}
 .cbtools button.done{border-color:var(--ok);color:var(--ok)}
 .cbtools button.bad{border-color:var(--bad);color:var(--bad)}
-#view table{border-collapse:collapse;margin:0 0 16px;font-size:13.5px;display:block;
+.md table{border-collapse:collapse;margin:0 0 16px;font-size:13.5px;display:block;
   overflow-x:auto}
-#view th,#view td{border:1px solid var(--edge);padding:7px 11px;text-align:left;
+.md th,.md td{border:1px solid var(--edge);padding:7px 11px;text-align:left;
   vertical-align:top}
-#view th{background:var(--panel);font-weight:600}
-#view img{max-width:100%;border:1px solid var(--edge);border-radius:10px;margin:5px 0 16px;
+.md th{background:var(--panel);font-weight:600}
+.md img{max-width:100%;border:1px solid var(--edge);border-radius:10px;margin:5px 0 16px;
   display:block}
 .wl{color:var(--accent);text-decoration:none;border-bottom:1px solid currentColor;cursor:pointer}
 .wl.dead{color:var(--faint);border-bottom-style:dotted;cursor:help}
@@ -270,6 +288,110 @@ body.resizing{cursor:col-resize;user-select:none}
 .sel .opt:hover,.sel .opt.cur{background:var(--sel)}
 .sel .opt.sel{background:var(--accent-soft);color:var(--accent);font-weight:600}
 
+/* ---------------------------- the outline ---------------------------- */
+#outline{width:252px;flex:0 0 252px;background:var(--panel);
+  border-left:1px solid var(--edge);display:flex;flex-direction:column;overflow:hidden}
+.phead{padding:13px 16px 11px;display:flex;align-items:baseline;gap:8px;
+  font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--faint);border-bottom:1px solid var(--edge)}
+#outTally{margin-left:auto;letter-spacing:.04em;font-weight:400}
+#outBody{flex:1;overflow-y:auto;padding:6px 0 26px;scrollbar-gutter:stable}
+.o{display:flex;gap:7px;align-items:baseline;width:100%;text-align:left;
+  padding:4px 12px 4px 13px;font-size:12.5px;line-height:1.45;color:var(--ink);
+  background:none;border:0;border-left:3px solid transparent;cursor:pointer;
+  text-decoration:none}
+.o:hover{background:var(--sel)}
+.o .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.o.here{background:var(--accent-soft);border-left-color:var(--accent);color:var(--accent)}
+.o.h1{font-weight:700}
+.o.h2{padding-left:26px}
+.o.h3{padding-left:39px;color:var(--dim)}
+.o.h4,.o.h5,.o.h6{padding-left:52px;color:var(--dim)}
+.o.code .nm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  color:var(--dim)}
+.o .tag{flex:0 0 auto;font-size:9px;letter-spacing:.06em;text-transform:uppercase;
+  font-weight:700;color:var(--accent);background:var(--accent-soft);
+  border-radius:4px;padding:1px 5px}
+.o .host{flex:0 0 auto;max-width:45%;font-size:10px;color:var(--faint);
+  overflow:hidden;text-overflow:ellipsis}
+.o.dead{cursor:help}
+.o.dead .nm{color:var(--faint);text-decoration:line-through}
+.o.link .nm{color:var(--accent)}
+.osec{padding:16px 16px 6px;font-size:10px;font-weight:700;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--faint);border-top:1px solid var(--edge);
+  margin-top:10px;display:flex;align-items:center;gap:7px}
+.osec::after{content:"";flex:1;height:1px;background:var(--edge)}
+#outBody .empty{padding:18px 16px}
+
+/* ----------------------------- the footer ----------------------------- */
+#foot{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--edge);
+  display:flex;flex-direction:column}
+#console{display:none;height:min(230px,32vh);overflow-y:auto;background:var(--bg);
+  border-bottom:1px solid var(--edge);padding:9px 14px;scrollbar-gutter:stable;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.6}
+body[data-console="on"] #console{display:block}
+#console .idle{color:var(--faint)}
+.ln{display:flex;gap:9px;white-space:pre-wrap;word-break:break-word}
+.ln .t{flex:0 0 auto;color:var(--faint);font-variant-numeric:tabular-nums}
+.ln .m{flex:1;min-width:0}
+.ln.start .m{color:var(--accent);font-weight:700}
+.ln.end .m{color:var(--ok);font-weight:700}
+.ln.err .m{color:var(--bad)}
+.ln.term .m{color:var(--note)}
+#footbar{display:flex;align-items:center;gap:14px;padding:5px 14px;min-height:34px;
+  font-size:11.5px;color:var(--dim)}
+#ver{flex:0 0 auto;font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  font-weight:700;color:var(--faint)}
+.chip{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.chip b{color:var(--ink);font-weight:600}
+.chip .bad{color:var(--bad);font-weight:600}
+.chip .sep{color:var(--faint)}
+.chip canvas{width:9px;height:9px;flex:0 0 9px;display:block}
+#footgap{flex:1;min-width:8px}
+.tog{padding:4px 9px;font-size:11.5px;color:var(--dim);background:var(--bg);
+  border:1px solid var(--edge);border-radius:var(--r);cursor:pointer;white-space:nowrap;
+  transition:border-color .12s,color .12s,background .12s}
+.tog:hover{border-color:var(--accent);color:var(--accent)}
+.tog.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.tog canvas{width:9px;height:9px;display:inline-block;vertical-align:-1px;margin-right:5px}
+
+/* ---------------------------- live mode ----------------------------
+   The note reads as the preview does, one rendered block at a time, until
+   the caret lands in a block -- that one shows its markdown instead. */
+.blk{position:relative}
+/* Consecutive list items are separate blocks so that only the item you are in
+   goes raw. Rendered, each is its own one-item list, and the margins between
+   them have to come back out or the list falls apart into paragraphs. */
+.blk[data-run="start"] ul,.blk[data-run="start"] ol,
+.blk[data-run="mid"]   ul,.blk[data-run="mid"]   ol{margin-bottom:0}
+.blk[data-run="mid"]   ul,.blk[data-run="mid"]   ol,
+.blk[data-run="end"]   ul,.blk[data-run="end"]   ol{margin-top:0}
+#live > .blk:first-child h1{margin-top:0}
+#live > .blk:first-child > .fm{margin-top:0}
+/* The block being edited: same width, same left edge and the same font as the
+   text it replaced, so moving between them does not shift the page. The tint
+   and the bar in the margin are what say where you are. */
+.raw{display:block;width:100%;margin:0 0 13px;padding:2px 0 2px 12px;border:0;
+  border-left:2px solid var(--accent);border-radius:0 var(--r) var(--r) 0;
+  background:var(--accent-soft);color:var(--ink);font:inherit;tab-size:4;
+  outline:none;resize:none;overflow:hidden;white-space:pre-wrap;word-break:break-word}
+.raw.h1{font-size:26px;font-weight:700;line-height:1.25;margin:32px 0 14px}
+.raw.h2{font-size:19px;font-weight:700;line-height:1.35;margin:30px 0 10px}
+.raw.h3,.raw.h4,.raw.h5,.raw.h6{font-size:12px;font-weight:700;margin:24px 0 8px;
+  text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+.raw.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+  line-height:1.55;margin:0 0 16px;padding:12px 14px 12px 12px}
+.raw.table,.raw.hr{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:12.5px;line-height:1.6;margin:0 0 16px}
+.raw.fm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  line-height:1.6;margin:0 0 22px;padding:9px 13px}
+.raw.li{margin:3px 0 3px 24px;width:calc(100% - 24px)}
+#live .hint{color:var(--faint)}
+
+/* Anywhere the outline can jump to. */
+.md [id^="L"]{scroll-margin-top:14px}
+
 #boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:14px;background:var(--bg);color:var(--dim);font-size:13px;
   z-index:80;letter-spacing:.04em}
@@ -277,22 +399,35 @@ body.resizing{cursor:col-resize;user-select:none}
 #boot.fail{color:var(--bad);padding:0 30px;text-align:center;line-height:1.7}
 
 @media (max-width:900px){
-  #app{flex-direction:column}
-  #side{width:100%;flex:0 0 auto;max-height:40vh;border-right:0;
-    border-bottom:1px solid var(--edge)}
+  /* Too narrow for three columns: a panel that is on covers the note instead
+     of squeezing it, and only one of them can be on at a time (see panel()).
+     Both start off, so a phone opens on the note itself. */
+  #shell{position:relative}
+  #side,#outline{position:absolute;top:0;bottom:0;z-index:20;width:min(320px,84vw);
+    flex:0 0 auto;box-shadow:var(--shadow-lg)}
+  #side{left:0;border-right:1px solid var(--edge)}
+  #outline{right:0}
   body[data-mode="split"] #editWrap{display:none}
   body[data-mode="split"] #grip{display:none}
   body[data-mode="split"] #viewWrap{flex:1 1 auto}
-  /* Stacked, the sidebar only gets 40vh, and a two-line sync block was tall
-     enough to push its own second line out through #side's overflow:hidden.
-     Side by side it fits, and the note list keeps the room it gave up.     */
-  #sync{padding:8px 14px}
-  #syncInfo{line-height:1.4}
-  body[data-sync] #side{max-height:47vh}
-  #bar{gap:8px;padding:8px 12px}
-  #seg{width:150px;flex:0 0 150px}
-  #status{max-width:16ch}
-  #view{padding:22px 20px 40vh}
+  #footbar{flex-wrap:wrap;gap:6px 12px;padding:6px 12px}
+  #footgap{display:none}
+  #console{height:min(200px,40vh)}
+  /* The path is what gives first: the mode control, Save and the two panel
+     toggles cannot shrink past their own words. */
+  #crumbWrap{display:none}
+  #bar{gap:7px;padding:8px 10px}
+  #seg{width:170px;flex:0 0 170px}
+  #status{max-width:14ch}
+}
+@media (max-width:700px){
+  /* Two more buttons than this bar was drawn for. The status words go and the
+     orb stays: standing in for them in one glyph is what it is for. */
+  #status{display:none}
+  #bar{gap:6px;padding:8px}
+  #seg{width:152px;flex:0 0 152px}
+  .tog{padding:4px 7px}
+  #view,#live{padding:22px 20px 40vh}
   #ed{padding:20px 30px 40vh 18px}
 }
 @media (prefers-reduced-motion:reduce){
@@ -304,6 +439,7 @@ body.resizing{cursor:col-resize;user-select:none}
 <div id="boot"><canvas id="bootMark" aria-hidden="true"></canvas><span id="bootMsg">reading the vault…</span></div>
 
 <div id="app">
+ <div id="shell">
   <aside id="side">
     <div id="brand">
       <canvas id="mark" aria-hidden="true"></canvas>
@@ -324,20 +460,19 @@ body.resizing{cursor:col-resize;user-select:none}
       </div>
     </div>
     <div id="list"></div>
-    <div id="sync" hidden>
-      <canvas id="dial" aria-hidden="true"></canvas>
-      <div id="syncInfo"></div>
-      <button class="btn" id="syncBtn">Sync</button>
-    </div>
   </aside>
 
   <main id="main">
     <div id="bar">
+      <button class="tog" id="leftBtn" type="button" title="Notes panel (Ctrl/⌘-B)"
+        aria-pressed="true">Notes</button>
       <div id="crumbWrap"><div id="crumb"></div><div id="stats"></div></div>
       <div id="state"><canvas id="orb" aria-hidden="true"></canvas>
         <div id="status" role="status" aria-live="polite"></div></div>
       <canvas id="seg" tabindex="0" role="tablist" aria-label="View mode"></canvas>
       <button class="btn primary" id="saveBtn" disabled>Save</button>
+      <button class="tog" id="rightBtn" type="button" title="Outline (Ctrl/⌘-E)"
+        aria-pressed="true">Outline</button>
     </div>
     <div id="panes">
       <div id="editWrap">
@@ -345,9 +480,33 @@ body.resizing{cursor:col-resize;user-select:none}
         <canvas id="map" aria-hidden="true" title="Document map — click or drag to scroll"></canvas>
       </div>
       <div id="grip" role="separator" aria-label="Resize panes" tabindex="0"><canvas aria-hidden="true"></canvas></div>
-      <div id="viewWrap"><div id="view"></div></div>
+      <div id="viewWrap"><div id="view" class="md"></div></div>
+      <div id="liveWrap"><div id="live" class="md"></div></div>
     </div>
   </main>
+
+  <aside id="outline">
+    <div class="phead">Outline<span id="outTally"></span></div>
+    <div id="outBody"></div>
+  </aside>
+ </div>
+
+ <footer id="foot">
+   <div id="console"><div class="idle">Nothing has run yet.</div></div>
+   <div id="footbar">
+     <span id="ver">cairn</span>
+     <div class="chip" id="cloudChip"></div>
+     <div class="chip" id="gitChip"></div>
+     <div id="footgap"></div>
+     <div id="sync" hidden>
+       <canvas id="dial" aria-hidden="true"></canvas>
+       <div id="syncInfo"></div>
+       <button class="btn" id="syncBtn">Sync</button>
+     </div>
+     <button class="tog" id="consoleBtn" type="button"
+       title="What cairn has run (Ctrl/⌘-J)" aria-pressed="false">Activity</button>
+   </div>
+ </footer>
 </div>
 
 <div id="veil"><div id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
@@ -715,6 +874,26 @@ function pip(el){
   });
 }
 
+/* --------------------------- the footer dots ---------------------------
+   One per chip. Hollow for "nothing to report here", filled for a state worth
+   a colour, and breathing on the shared ticker while something is running. */
+const TONE = {ok: "ok", warn: "warn", bad: "bad", run: "accent"};
+function dot(el, tone){
+  const s = el.__surf || surface(el, (g, w, h, sf) => {
+    const t = sf.state.tone;
+    g.beginPath(); g.arc(w / 2, h / 2, w / 2 - 1, 0, Math.PI * 2);
+    if (!t){ g.strokeStyle = c("faint"); g.lineWidth = 1.3; g.stroke(); return; }
+    g.globalAlpha = t === "run" ? .35 + .65 * (0.5 + 0.5 * Math.cos(now() / 480)) : 1;
+    g.fillStyle = c(TONE[t]);
+    g.fill();
+    g.globalAlpha = 1;
+  });
+  s.state.tone = tone || "";
+  animate(s, tone === "run");
+  s.paint();
+  return s;
+}
+
 /* ----------------------------- sync dial -----------------------------
    The arc is the share of the interval between the last sync and the next
    that has already elapsed, so a glance says how overdue a vault is.   */
@@ -742,7 +921,7 @@ const dialS = surface($("dial"), (g, w, h, s) => {
 /* ------------------------- segmented control -------------------------
    A real control, not three buttons: one canvas, an animated pill, hover
    and focus states, and arrow-key navigation.                          */
-const MODES = [["edit", "Edit"], ["split", "Split"], ["view", "Preview"]];
+const MODES = [["edit", "Edit"], ["split", "Split"], ["live", "Live"], ["view", "Preview"]];
 let mode = "split";
 const segEl = $("seg");
 const segS = surface(segEl, (g, w, h, s) => {
@@ -784,8 +963,12 @@ function setMode(m, animated){
   segEl.setAttribute("aria-label", "View mode: " + MODES[to][1]);
   if (animated === false){ segS.state.pos = to; segS.paint(); }
   else tween(segS, 200, t => { segS.state.pos = from + (to - from) * t; });
+  /* Only one of the two rendered panes holds the note at a time -- their ids
+     are source line numbers and two copies would both claim them -- so the
+     pane being switched to has to be filled before it is looked at. */
+  if (current) preview();
   /* The panes only just changed size; the surfaces inside them need it. */
-  requestAnimationFrame(() => { mapS.paint(); gripS.paint(); });
+  requestAnimationFrame(() => { mapS.paint(); gripS.paint(); spy(); });
 }
 segEl.addEventListener("pointermove", e => {
   const i = segIndexAt(e.offsetX);
@@ -1121,7 +1304,14 @@ function codeTools(lang){
   return html + "</div>";
 }
 
-function render(text, ctx){
+/* `base` is the line this text started on inside the note body, so the
+   headings and code blocks the renderer emits can carry an id naming their
+   source line -- the one thing the outline, the preview and the caret can all
+   agree on. Nested renders (callouts, blockquotes) pass their own offset down
+   rather than restarting at zero, and live mode renders one block at a time
+   with the block's own offset. */
+function render(text, ctx, base){
+  base = base || 0;
   const [fm, body] = splitFm(text);
   const lines = body.split("\n");
   let out = fm !== null ? '<div class="fm">' + esc(fm.trim()) + "</div>" : "";
@@ -1143,10 +1333,11 @@ function render(text, ctx){
       flush();
       const lang = fence[1];
       const buf = [];
+      const at = i;
       i++;
       while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
       i++;
-      out += '<div class="cb">' + codeTools(lang)
+      out += '<div class="cb" id="L' + (base + at) + '">' + codeTools(lang)
            + "<pre><code" + (lang ? ' class="language-' + esc(lang) + '"' : "") + ">"
            + esc(buf.join("\n")) + "</code></pre></div>";
       continue;
@@ -1159,10 +1350,11 @@ function render(text, ctx){
       const kind = call[1].toLowerCase();
       const title = call[2].trim() || call[1].toUpperCase();
       const buf = [];
+      const at = i;
       i++;
       while (i < lines.length && /^>/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ""));
       out += '<div class="callout callout-' + esc(kind) + '"><div class="ct">' + esc(title) + "</div>"
-           + render(buf.join("\n"), ctx) + "</div>";
+           + render(buf.join("\n"), ctx, base + at + 1) + "</div>";
       continue;
     }
 
@@ -1170,8 +1362,9 @@ function render(text, ctx){
     if (/^>\s?/.test(line)){
       flush();
       const buf = [];
+      const at = i;
       while (i < lines.length && /^>/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ""));
-      out += "<blockquote>" + render(buf.join("\n"), ctx) + "</blockquote>";
+      out += "<blockquote>" + render(buf.join("\n"), ctx, base + at) + "</blockquote>";
       continue;
     }
 
@@ -1194,7 +1387,7 @@ function render(text, ctx){
     if (h){
       flush();
       const n = h[1].length;
-      out += "<h" + n + ">" + inline(h[2], ctx) + "</h" + n + ">";
+      out += "<h" + n + ' id="L' + (base + i) + '">' + inline(h[2], ctx) + "</h" + n + ">";
       i++;
       continue;
     }
@@ -1293,28 +1486,75 @@ function label(text, needle){
   return span;
 }
 
-function drawList(filter){
-  const f = (filter || "").trim().toLowerCase();
-  $("qField").classList.toggle("has-q", !!f);
-  const shown = f ? NOTES.filter(n =>
-    (n.title + " " + n.path + " " + n.tags.join(" ") + " " + n.raw).toLowerCase().includes(f)) : NOTES;
-  dropSurfacesIn(listEl);
-  listEl.innerHTML = "";
-  let folder = null;
-  for (const n of shown){
-    if (n.folder !== folder){
-      folder = n.folder;
-      const g = document.createElement("div");
-      g.className = "grp";
-      g.append(folder === "(root)" ? "Vault root" : folder);
-      listEl.appendChild(g);
+/* The vault as a tree. Folders come out of the note paths themselves, so a
+   folder with no notes in it is simply not there. Which ones are shut is
+   remembered per vault, and a search ignores the memory -- a match three
+   folders down is no use behind a closed one.
+
+   Folders and notes are the same .item row, one twisty column wider, which is
+   what keeps the search highlighting, the unsaved pip and the arrow-key
+   navigation working on both. */
+
+let SHUT = new Set();
+try { SHUT = new Set(JSON.parse(localStorage.getItem("cairn-shut") || "[]")); }
+catch (e) {}
+
+function rememberShut(){
+  try { localStorage.setItem("cairn-shut", JSON.stringify([...SHUT])); } catch (e) {}
+}
+
+function treeOf(notes){
+  const root = {dirs: new Map(), notes: [], count: 0};
+  for (const n of notes){
+    const parts = n.path.split("/");
+    let node = root, here = "";
+    node.count++;
+    for (let k = 0; k < parts.length - 1; k++){
+      here = here ? here + "/" + parts[k] : parts[k];
+      if (!node.dirs.has(parts[k]))
+        node.dirs.set(parts[k], {dirs: new Map(), notes: [], count: 0, path: here});
+      node = node.dirs.get(parts[k]);
+      node.count++;
     }
+    node.notes.push(n);
+  }
+  return root;
+}
+
+function twist(b, glyph){
+  const el = document.createElement("span");
+  el.className = "tw";
+  el.textContent = glyph;
+  b.appendChild(el);
+}
+
+function drawBranch(node, depth, f, forceOpen){
+  for (const [name, kid] of node.dirs){
+    const shut = !forceOpen && SHUT.has(kid.path);
     const b = document.createElement("button");
-    b.className = "item" + (current && n.path === current.path ? " on" : "");
+    b.className = "item dir" + (shut ? " shut" : "");
+    b.style.paddingLeft = (13 + depth * 13) + "px";
+    b.dataset.fold = kid.path;
+    b.title = kid.path;
+    twist(b, "▼");
+    b.appendChild(label(name, f));
+    const ct = document.createElement("span");
+    ct.className = "ct";
+    ct.textContent = kid.count;
+    b.appendChild(ct);
+    listEl.appendChild(b);
+    if (!shut) drawBranch(kid, depth + 1, f, forceOpen);
+  }
+  for (const n of node.notes){
+    const on = current && n.path === current.path;
+    const b = document.createElement("button");
+    b.className = "item" + (on ? " on" : "");
+    b.style.paddingLeft = (13 + depth * 13) + "px";
     b.dataset.open = n.path;
     b.title = n.path;
+    twist(b, "");                    /* keeps titles off the twisty column */
     b.appendChild(label(n.title, f));
-    if (dirty && current && n.path === current.path){
+    if (dirty && on){
       const cv = document.createElement("canvas");
       cv.className = "pip";
       b.appendChild(cv);
@@ -1322,6 +1562,16 @@ function drawList(filter){
     }
     listEl.appendChild(b);
   }
+}
+
+function drawList(filter){
+  const f = (filter || "").trim().toLowerCase();
+  $("qField").classList.toggle("has-q", !!f);
+  const shown = f ? NOTES.filter(n =>
+    (n.title + " " + n.path + " " + n.tags.join(" ") + " " + n.raw).toLowerCase().includes(f)) : NOTES;
+  dropSurfacesIn(listEl);
+  listEl.innerHTML = "";
+  drawBranch(treeOf(shown), 0, f, !!f);
   $("tally").textContent = f ? shown.length + " of " + NOTES.length + " match"
                              : NOTES.length + (NOTES.length === 1 ? " note" : " notes");
   if (f && !shown.length){
@@ -1332,26 +1582,575 @@ function drawList(filter){
   }
 }
 
+/* Opening a note from a wikilink or from search can land inside a folder that
+   is shut, which would leave nothing highlighted anywhere. */
+function reveal(path){
+  const parts = path.split("/");
+  let here = "", changed = false;
+  for (let k = 0; k < parts.length - 1; k++){
+    here = here ? here + "/" + parts[k] : parts[k];
+    if (SHUT.delete(here)) changed = true;
+  }
+  if (changed) rememberShut();
+}
+
+/* ----------------------------- the outline ----------------------------- */
+/* Built from the text in the textarea, not from the rendered HTML, so it keeps
+   up as you type and knows the source line of everything it lists. The line is
+   the whole trick: the renderer puts the same number in an id, so one outline
+   entry can move the preview and the caret to the same place. */
+
+let OUT_OFF = 0;                 /* body line 0 is this line of the file */
+
+function linksIn(line, out, seen){
+  /* Inline code is not a link, and an ![[embed]] is an image, not one either. */
+  let t = line.replace(/`[^`]*`/g, " ").replace(/!\[\[[^\]]+\]\]/g, " ");
+  const keep = (key, item) => { if (!seen.has(key)){ seen.add(key); out.push(item); } };
+
+  t = t.replace(/\[\[([^\]]+)\]\]/g, (m, raw) => {
+    const bar = raw.indexOf("|");
+    const target = (bar < 0 ? raw : raw.slice(0, bar)).trim();
+    const text   = (bar < 0 ? raw : raw.slice(bar + 1)).trim();
+    keep("w:" + target, {kind: "wiki", target: target, label: text || target});
+    return " ";
+  });
+  t = t.replace(/\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, (m, text, href) => {
+    keep("u:" + href, {kind: "url", href: href, label: text.trim() || href});
+    return " ";
+  });
+  t.replace(/(^|[\s(])(https?:\/\/[^\s<>)"']+[^\s<>)"'.,;:!?])/g, (m, pre, href) => {
+    keep("u:" + href, {kind: "url", href: href, label: href});
+    return m;
+  });
+}
+
+function plain(t){
+  return t.replace(/`([^`]*)`/g, "$1")
+          .replace(/\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g, (m, a, b) => b || a)
+          .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+          .replace(/[*_~]/g, "")
+          .trim();
+}
+
+function outlineOf(text){
+  const [fm, body] = splitFm(text);
+  /* Outline line numbers are body-relative, because that is what the renderer
+     counts. The textarea holds the frontmatter too. */
+  const off = fm === null ? 0 : fm.split("\n").length + 2;
+  const lines = body.split("\n");
+  const items = [], links = [], seen = new Set();
+  let i = 0;
+
+  while (i < lines.length){
+    const fence = lines[i].match(/^```(\S*)/);
+    if (fence){
+      const at = i, lang = (fence[1] || "").toLowerCase();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      /* The first line that says anything is what a code block is "called" --
+         a bare fence has no other label, and a URL inside a command is not a
+         link anyone can follow from here. */
+      const first = (buf.find(l => l.trim()) || "").trim();
+      items.push({kind: "code", line: at, lang: lang,
+                  text: first.slice(0, 120) || lang || "code block"});
+      continue;
+    }
+    const h = lines[i].match(/^(#{1,6})\s+(.*)$/);
+    if (h) items.push({kind: "h", line: i, level: h[1].length, text: plain(h[2])});
+    linksIn(lines[i], links, seen);
+    i++;
+  }
+  return {items: items, links: links, off: off};
+}
+
+function host(href){
+  try { return new URL(href).hostname.replace(/^www\./, ""); }
+  catch (e) { return ""; }
+}
+
+function bit(parent, cls, text){
+  const el = document.createElement("span");
+  el.className = cls;
+  el.textContent = text;
+  parent.appendChild(el);
+  return el;
+}
+
+function drawOutline(){
+  const box = $("outBody");
+  box.innerHTML = "";
+  if (!current){
+    box.innerHTML = '<div class="empty">No note open.</div>';
+    $("outTally").textContent = "";
+    return;
+  }
+  const o = outlineOf(edEl.value);
+  OUT_OFF = o.off;
+
+  for (const it of o.items){
+    const b = document.createElement("button");
+    b.dataset.line = it.line;
+    b.title = it.text;
+    if (it.kind === "h"){
+      b.className = "o h" + it.level;
+      bit(b, "nm", it.text || "untitled heading");
+    } else {
+      b.className = "o code";
+      if (it.lang) bit(b, "tag", it.lang);
+      bit(b, "nm", it.text);
+    }
+    box.appendChild(b);
+  }
+  if (!o.items.length)
+    box.innerHTML = '<div class="empty">No headings or code blocks yet.</div>';
+
+  if (o.links.length){
+    const head = document.createElement("div");
+    head.className = "osec";
+    head.append("Links");
+    box.appendChild(head);
+    for (const l of o.links){
+      if (l.kind === "wiki"){
+        const path = TARGETS[l.target];
+        const b = document.createElement("button");
+        b.className = "o link" + (path ? "" : " dead");
+        if (path){ b.dataset.open = path; b.title = path; }
+        else b.title = "no note called that";
+        bit(b, "nm", l.label);
+        bit(b, "host", "note");
+        box.appendChild(b);
+      } else {
+        const a = document.createElement("a");
+        a.className = "o link";
+        a.href = l.href; a.target = "_blank"; a.rel = "noopener noreferrer";
+        a.title = l.href;
+        bit(a, "nm", l.label);
+        bit(a, "host", host(l.href));
+        box.appendChild(a);
+      }
+    }
+  }
+  $("outTally").textContent = o.items.length + " item" + (o.items.length === 1 ? "" : "s")
+    + (o.links.length ? " · " + o.links.length + " link" + (o.links.length === 1 ? "" : "s") : "");
+  spy();
+}
+
+function caretTo(fileLine){
+  const upto = edEl.value.split("\n").slice(0, fileLine);
+  const pos = upto.join("\n").length + (upto.length ? 1 : 0);
+  edEl.focus();
+  edEl.setSelectionRange(pos, pos);
+  /* Setting the selection on a textarea that is already focused does not
+     scroll it, and line × line-height is wrong the moment a line wraps.
+     Leaving and coming back makes the browser scroll its own caret in. */
+  edEl.blur();
+  edEl.focus();
+}
+
+function mark(line){
+  for (const b of $("outBody").querySelectorAll(".here")) b.classList.remove("here");
+  const b = $("outBody").querySelector('[data-line="' + line + '"]');
+  if (b) b.classList.add("here");
+}
+
+function gotoLine(line){
+  if (mode === "live"){
+    /* One place to go rather than two: the block holding that line opens for
+       editing, which is what the outline is pointing at. */
+    const file = line + OUT_OFF;
+    const i = BLOCKS.findIndex(b => file >= b.a && file < b.b);
+    if (i >= 0){
+      activate(i, 0);
+      const ta = liveEl.querySelector("textarea.raw");
+      if (ta) ta.scrollIntoView({block: "center"});
+    }
+    mark(line);
+    spyHold = now() + 700;
+    return;
+  }
+  /* The caret first. Focusing the textarea scrolls it, and a browser treats
+     that as the user taking over -- it cancels a smooth scroll already running
+     in the preview, which left the preview short of where it was going. */
+  if (mode !== "view") caretTo(line + OUT_OFF);
+  const el = document.getElementById("L" + line);
+  if (el && mode !== "edit") el.scrollIntoView({block: "start", behavior: "smooth"});
+  /* Near the end of a note there is not enough left to scroll, so the target
+     cannot reach the top and the scroll-spy would rightly say the current
+     section is still the one above it. What you clicked is the answer you
+     want back, so it wins until you scroll for yourself. */
+  mark(line);
+  spyHold = now() + 700;
+}
+
+/* Which entry the visible pane is sitting on. rAF-throttled: this runs on
+   every scroll event and reads layout for each entry. */
+let spying = false, spyHold = 0;
+function spy(){
+  if (spying || now() < spyHold) return;
+  spying = true;
+  requestAnimationFrame(() => {
+    spying = false;
+    const wrap = $("viewWrap").offsetParent ? $("viewWrap") : $("liveWrap");
+    if (!wrap.offsetParent) return;             /* neither is on screen */
+    const line = wrap.getBoundingClientRect().top + 48;
+    let hit = null;
+    for (const b of $("outBody").querySelectorAll("button[data-line]")){
+      const el = document.getElementById("L" + b.dataset.line);
+      if (!el) continue;
+      if (el.getBoundingClientRect().top <= line) hit = b; else break;
+    }
+    for (const b of $("outBody").querySelectorAll(".here")) b.classList.remove("here");
+    if (hit) hit.classList.add("here");
+  });
+}
+
 /* ----------------------------- preview ----------------------------- */
-function hydrate(){
-  for (const cv of viewEl.querySelectorAll("canvas[data-icon]")){
+/* hydrate() takes a root because live mode renders block by block into a
+   second pane, and every canvas in either of them needs the same wiring. */
+function hydrate(root){
+  for (const cv of root.querySelectorAll("canvas[data-icon]")){
     const kind = cv.dataset.icon;
     surface(cv, (g, w, h) => {
       const col = cv.closest("button").classList.contains("done") ? c("ok") : c("dim");
       (kind === "copy" ? drawCopyIcon : drawTermIcon)(g, w, h, col);
     });
   }
-  for (const cv of viewEl.querySelectorAll("canvas[data-task]")){
+  for (const cv of root.querySelectorAll("canvas[data-task]")){
     const n = +cv.dataset.task;
     taskBox(cv, cv.dataset.on === "1", on => toggleTask(n, on, cv));
   }
 }
 
 function preview(){
-  dropSurfacesIn(viewEl);
-  viewEl.innerHTML = render(edEl.value, ctx());
-  hydrate();
+  /* One rendered tree at a time: headings and code blocks carry an id naming
+     their source line, and two copies of the note would mean two elements
+     claiming the same id, after which nothing that scrolls to one works. */
+  if (mode === "live"){
+    dropSurfacesIn(viewEl);
+    viewEl.innerHTML = "";
+    drawLive();
+  } else {
+    dropSurfacesIn(liveEl);
+    liveEl.innerHTML = "";
+    BLOCK_AT = null;
+    dropSurfacesIn(viewEl);
+    viewEl.innerHTML = render(edEl.value, ctx());
+    hydrate(viewEl);
+  }
+  drawOutline();
 }
+
+/* ------------------------------ live mode ------------------------------ */
+/* The note reads as the preview does, except for the block the caret is in:
+   that one is a textarea holding its own markdown. Two things make it work
+   without a second copy of anything. The blocks are cut on the same rules the
+   renderer uses, so a rendered block and its source are the same lines. And
+   #ed stays the one true text -- the inline editor splices its own lines back
+   into it on every keystroke, so saving, the outline, the document map, the
+   conflict check and Ctrl-S all carry on reading the note they always did.
+
+   Block, not line: a paragraph is three lines that render as one thing, and
+   there is no half-rendered paragraph to put a raw line inside. List items
+   are cut one per block, though, because a whole list going raw to fix one
+   bullet is exactly the jolt this mode exists to avoid. */
+
+const liveEl = $("live");
+let BLOCKS = [];               /* the blocks, in file line numbers */
+let BLOCK_AT = null;           /* which one is open, if any */
+
+const LIST_RE = /^\s*([-*+]|\d+\.)\s+/;
+const HEAD_RE = /^(#{1,6})\s+/;
+const RULE_RE = /^\s*(---|\*\*\*|___)\s*$/;
+
+function blocksOf(text){
+  const lines = text.split("\n");
+  const out = [];
+  let i = 0;
+
+  /* Frontmatter is one block whatever is in it: one thing to read, one thing
+     to edit. It is also the one block the renderer would misread on its own --
+     handed a slice with no trailing newline, splitFm sees two rules and a
+     paragraph -- so drawLive() writes it out itself. */
+  if (lines[0] === "---"){
+    let k = 1;
+    while (k < lines.length && lines[k] !== "---") k++;
+    if (k < lines.length){ out.push({a: 0, b: k + 1, kind: "fm"}); i = k + 1; }
+  }
+
+  while (i < lines.length){
+    const line = lines[i];
+    if (!line.trim()){ i++; continue; }      /* blank lines belong to no block */
+    const a = i;
+
+    if (/^```/.test(line)){
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) i++;
+      out.push({a: a, b: Math.min(i + 1, lines.length), kind: "code"});
+      i++;
+      continue;
+    }
+    if (/^>/.test(line)){                    /* blockquotes and callouts alike */
+      while (i < lines.length && /^>/.test(lines[i])) i++;
+      out.push({a: a, b: i, kind: "quote"});
+      continue;
+    }
+    if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])){
+      i += 2;
+      while (i < lines.length && /^\s*\|/.test(lines[i])) i++;
+      out.push({a: a, b: i, kind: "table"});
+      continue;
+    }
+    if (HEAD_RE.test(line)){
+      out.push({a: a, b: a + 1, kind: "h" + line.match(HEAD_RE)[1].length});
+      i++;
+      continue;
+    }
+    if (RULE_RE.test(line)){ out.push({a: a, b: a + 1, kind: "hr"}); i++; continue; }
+    if (LIST_RE.test(line)){
+      const ordered = /^\s*\d+\./.test(line);
+      i++;
+      while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !LIST_RE.test(lines[i])) i++;
+      out.push({a: a, b: i, kind: "li", ordered: ordered});
+      continue;
+    }
+    while (i < lines.length && lines[i].trim() && !/^```/.test(lines[i])
+           && !/^>/.test(lines[i]) && !HEAD_RE.test(lines[i])
+           && !LIST_RE.test(lines[i]) && !RULE_RE.test(lines[i])) i++;
+    out.push({a: a, b: i, kind: "p"});
+  }
+
+  /* An empty note has no blocks and so nothing to click on. Give it one. */
+  if (!out.length) out.push({a: Math.max(0, lines.length - 1), b: lines.length, kind: "p"});
+  return out;
+}
+
+function grow(ta){
+  ta.style.height = "auto";
+  ta.style.height = ta.scrollHeight + "px";
+}
+
+function drawLive(){
+  dropSurfacesIn(liveEl);
+  liveEl.innerHTML = "";
+  if (!current) return;
+  BLOCKS = blocksOf(edEl.value);
+  if (BLOCK_AT !== null && BLOCK_AT >= BLOCKS.length) BLOCK_AT = null;
+  const lines = edEl.value.split("\n");
+  /* One ctx for the whole note, not one per block: the task boxes number
+     themselves off it, and toggleTask counts them across the whole body. */
+  const c1 = ctx();
+  let ordinal = 0;
+
+  BLOCKS.forEach((blk, i) => {
+    const text = lines.slice(blk.a, blk.b).join("\n");
+    const runs = blk.kind === "li";
+    const before = runs && i > 0 && BLOCKS[i - 1].kind === "li";
+    const after  = runs && i + 1 < BLOCKS.length && BLOCKS[i + 1].kind === "li";
+    /* Numbering restarts where the numbers do. Bullets above an ordered list
+       are part of the same run for spacing and no part of it for counting. */
+    ordinal = blk.ordered ? (before && BLOCKS[i - 1].ordered ? ordinal + 1 : 1) : 0;
+
+    if (i === BLOCK_AT){
+      const ta = document.createElement("textarea");
+      ta.className = "raw" + (blk.kind === "p" ? "" : " " + blk.kind);
+      ta.spellcheck = false;
+      ta.value = text;
+      liveEl.appendChild(ta);
+      grow(ta);
+      return;
+    }
+
+    const div = document.createElement("div");
+    div.className = "blk";
+    div.dataset.i = i;
+    if (runs) div.dataset.run = before && after ? "mid" : before ? "end" : after ? "start" : "solo";
+
+    if (!text.trim()){
+      div.innerHTML = '<p class="hint">This note is empty — click here to start writing.</p>';
+    } else if (blk.kind === "fm"){
+      div.innerHTML = '<div class="fm">'
+        + esc(text.replace(/^---\n?/, "").replace(/\n?---$/, "").trim()) + "</div>";
+    } else {
+      div.innerHTML = render(text, c1, blk.a);
+      /* Every item is its own one-item list, so an <ol> would start over at 1
+         each time. The number comes from where the item sits in its run. */
+      if (blk.ordered){
+        const ol = div.querySelector("ol");
+        if (ol) ol.start = ordinal;
+      }
+    }
+    liveEl.appendChild(div);
+  });
+  hydrate(liveEl);
+}
+
+/* Where in the raw markdown a click on the rendered text landed.
+
+   The two strings differ by exactly the markup, so walking them together and
+   skipping what produced no visible character gets there. It is an
+   approximation -- a click inside a wikilink's own brackets can land a
+   character or two out -- and it only has to put the caret near enough that
+   the next thing you do is type, not hunt. */
+function rawOffset(raw, want){
+  if (want == null) return raw.length;
+  if (want <= 0) return 0;
+  let i = 0, seen = 0, bol = true;
+  while (i < raw.length && seen < want){
+    const rest = raw.slice(i);
+    if (bol){
+      bol = false;
+      const lead = rest.match(/^(\s*(?:[-*+]|\d+\.)\s+(?:\[[ xX]\]\s+)?|#{1,6}\s+|>\s?|```\S*|\|)/);
+      if (lead){ i += lead[0].length; continue; }
+    }
+    if (raw[i] === "\n"){ i++; bol = true; continue; }   /* a <br> is no character */
+
+    const em = rest.match(/^(\*\*|~~|`|\*)/);
+    if (em){ i += em[0].length; continue; }
+
+    const wiki = rest.match(/^\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/);
+    if (wiki){
+      const shown = wiki[2] != null ? wiki[2] : wiki[1];
+      const head = wiki[2] != null ? 3 + wiki[1].length : 2;
+      const take = Math.min(shown.length, want - seen);
+      seen += take;
+      i += head + take;
+      if (seen >= want) return i;
+      i += (shown.length - take) + 2;
+      continue;
+    }
+    const link = rest.match(/^\[([^\]]*)\]\([^)]*\)/);
+    if (link){
+      const take = Math.min(link[1].length, want - seen);
+      seen += take;
+      i += 1 + take;
+      if (seen >= want) return i;
+      i += (link[1].length - take) + (link[0].length - link[1].length - 1);
+      continue;
+    }
+    i++;
+    seen++;
+  }
+  return i;
+}
+
+/* How far into the block's rendered text a point is. */
+function pointOffset(el, x, y){
+  let node = null, at = 0;
+  if (document.caretRangeFromPoint){
+    const r = document.caretRangeFromPoint(x, y);
+    if (r){ node = r.startContainer; at = r.startOffset; }
+  } else if (document.caretPositionFromPoint){
+    const r = document.caretPositionFromPoint(x, y);
+    if (r){ node = r.offsetNode; at = r.offset; }
+  }
+  if (!node || node.nodeType !== 3 || !el.contains(node)) return null;
+  let seen = 0;
+  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let t;
+  while ((t = walk.nextNode())){
+    if (t === node) return seen + at;
+    seen += t.nodeValue.length;
+  }
+  return null;
+}
+
+function blockText(i){
+  return edEl.value.split("\n").slice(BLOCKS[i].a, BLOCKS[i].b).join("\n");
+}
+
+function activate(i, at){
+  if (i == null || i < 0 || i >= BLOCKS.length) return;
+  BLOCK_AT = i;
+  drawLive();
+  const ta = liveEl.querySelector("textarea.raw");
+  if (!ta) return;
+  ta.focus();
+  const pos = Math.max(0, Math.min(at == null ? ta.value.length : at, ta.value.length));
+  ta.setSelectionRange(pos, pos);
+}
+
+function deactivate(){
+  if (BLOCK_AT === null) return;
+  BLOCK_AT = null;
+  drawLive();
+}
+
+/* Splice the block being edited back into the note. Everything below it moves
+   by however many lines it just gained or lost. */
+function liveEdit(ta){
+  const blk = BLOCKS[BLOCK_AT];
+  if (!blk) return;
+  const lines = edEl.value.split("\n");
+  const mine = ta.value.split("\n");
+  edEl.value = lines.slice(0, blk.a).concat(mine, lines.slice(blk.b)).join("\n");
+  const delta = (blk.a + mine.length) - blk.b;
+  blk.b += delta;
+  for (let j = BLOCK_AT + 1; j < BLOCKS.length; j++){ BLOCKS[j].a += delta; BLOCKS[j].b += delta; }
+  grow(ta);
+  if (!dirty) setDirty(true);
+  drawOutline();
+  drawStats();
+  mapS.paint();
+}
+
+liveEl.addEventListener("pointerdown", e => {
+  if (e.target.closest("textarea.raw")) return;      /* it already has the caret */
+  if (e.target.closest("a[href]")) return;           /* a real link is a link */
+  if (e.target.closest("canvas[data-task],button[data-cb]")) return;
+  const div = e.target.closest(".blk");
+  if (!div) return;
+  /* Taking the default stops the browser moving focus for us, which is the
+     whole trick: no blur fires, so the block being left does not redraw out
+     from under the click that is choosing the next one. */
+  e.preventDefault();
+  const i = +div.dataset.i;
+  activate(i, rawOffset(blockText(i), pointOffset(div, e.clientX, e.clientY)));
+});
+
+liveEl.addEventListener("click", e => {
+  const a = e.target.closest("a.wl[data-open]");
+  if (a){ e.preventDefault(); return open_(a.dataset.open); }
+  const b = e.target.closest("button[data-cb]");
+  if (b) codeAction(b);
+});
+
+liveEl.addEventListener("input", e => {
+  if (e.target.classList.contains("raw")) liveEdit(e.target);
+});
+
+liveEl.addEventListener("focusout", e => {
+  if (!e.target.classList.contains("raw")) return;
+  /* Only when the focus actually left the pane -- inside it, the pointerdown
+     above has already chosen the next block. */
+  setTimeout(() => {
+    if (BLOCK_AT !== null && !liveEl.contains(document.activeElement)) deactivate();
+  }, 0);
+});
+
+liveEl.addEventListener("keydown", e => {
+  const ta = e.target;
+  if (!ta.classList || !ta.classList.contains("raw")) return;
+  if (e.key === "Escape"){ e.preventDefault(); return deactivate(); }
+  if (e.key === "Tab"){
+    e.preventDefault();
+    const a = ta.selectionStart, b = ta.selectionEnd;
+    ta.value = ta.value.slice(0, a) + "  " + ta.value.slice(b);
+    ta.setSelectionRange(a + 2, a + 2);
+    return liveEdit(ta);
+  }
+  /* Off the top or the bottom of a block and into the next one, so the caret
+     walks the note the way it would in a plain editor. */
+  if (e.key === "ArrowUp" && !ta.value.slice(0, ta.selectionStart).includes("\n")){
+    e.preventDefault();
+    return activate(BLOCK_AT - 1, null);
+  }
+  if (e.key === "ArrowDown" && !ta.value.slice(ta.selectionEnd).includes("\n")){
+    e.preventDefault();
+    return activate(BLOCK_AT + 1, 0);
+  }
+});
 
 /* Flip the nth `- [ ]` in the source. Fenced code and the frontmatter are
    skipped so the count lines up with what the renderer made a box for.  */
@@ -1405,13 +2204,17 @@ function open_(path){
     crumbEl.appendChild(s);
   });
   edEl.scrollTop = 0;
+  BLOCK_AT = null;
   preview();
+  $("viewWrap").scrollTop = 0;
+  $("liveWrap").scrollTop = 0;
   setDirty(false);
   setStatus("", "");
   drawStats();
   mapS.paint();
   document.title = n.title + " — cairn";
   $("trashBtn").disabled = false;
+  reveal(n.path);
   drawList(qEl.value);
 }
 
@@ -1540,11 +2343,11 @@ function drawSync(){
   const failed = s.last && !s.last.ok && mine && mine >= (theirs || 0);
 
   const bits = [];
-  if (last) bits.push("Last <b>" + esc(rel(last)) + "</b>" +
+  if (last) bits.push("Synced <b>" + esc(rel(last)) + "</b>" +
                       (failed ? ' <span class="bad">— failed</span>' : ""));
   else      bits.push("No sync yet");
-  if (s.next) bits.push("Next <b>" + esc(rel(s.next)) + "</b>");
-  syncInfo.innerHTML = bits.join("<br>");
+  if (s.next) bits.push("next <b>" + esc(rel(s.next)) + "</b>");
+  syncInfo.innerHTML = bits.join(' <span class="sep">·</span> ');
 
   /* How far through the wait we are, for the dial's arc. */
   dialBad = !!failed;
@@ -1556,13 +2359,169 @@ function drawSync(){
   dialS.paint();
 }
 
-async function refreshSync(){
-  try {
-    SYNC = (await api("/api/sync/status")).sync;
-  } catch (e){
-    SYNC = null;                         /* server too old, or not unlocked */
+/* ------------------------- the rest of the footer -------------------------
+   Three ways these notes leave this machine, and cairn watching all three.
+   The footer is a window on them and a control for none of them: the only
+   button here that acts is the Sync one that was already here.          */
+
+let GIT = null, CLOUD = null;
+
+function chip(el, tone, parts, title){
+  /* The chip is rebuilt every half minute, and its dot is a canvas. Without
+     this the surfaces would pile up in SURF for the whole session — the same
+     reason the rendered markdown drops its own. */
+  dropSurfacesIn(el);
+  el.innerHTML = "<canvas></canvas>"
+               + parts.filter(Boolean).join('<span class="sep">·</span>');
+  dot(el.firstElementChild, tone);
+  el.title = title || "";
+}
+
+function drawCloud(){
+  const k = CLOUD, el = $("cloudChip");
+  if (!k || !k.detected){
+    return chip(el, "", ["Not in a sync folder"],
+      "cairn looks at the vault's path for a provider's folder — Proton Drive, "
+      + "iCloud or Dropbox. This vault is not inside one, so nothing off this "
+      + "machine has a copy unless git is pushing somewhere.");
   }
+  /* The newest note on disk, out of the listing the page already has. It is
+     the honest half of this chip: cairn can see when a file last changed, and
+     cannot see whether the provider has finished uploading it. */
+  const newest = NOTES.reduce((m, n) => Math.max(m, n.mtime || 0), 0);
+  chip(el, k.present ? "ok" : "bad",
+       ["<b>" + esc(k.provider) + "</b>",
+        k.account ? esc(k.account) : null,
+        k.present ? (newest ? "note saved " + esc(rel(newest)) : "no notes yet")
+                  : '<span class="bad">folder is not there</span>'],
+       k.present
+         ? "The vault is inside " + k.root + ".\n\ncairn can see that folder and "
+           + "when its files last changed. It cannot see " + k.provider + "'s "
+           + "upload queue, so this does not promise the last save has reached "
+           + "the cloud."
+         : k.root + " is not readable right now — the client may be signed out "
+           + "or not running.");
+}
+
+function drawGit(){
+  const g = GIT, el = $("gitChip");
+  if (!g || !g.repo)
+    return chip(el, "", ["Not a git repo"], "No git repository at or above the vault.");
+  const bits = ["<b>" + esc(g.detached ? "detached HEAD" : (g.branch || "?")) + "</b>"];
+
+  const work = [];
+  if (g.changed)   work.push(g.changed + " changed");
+  if (g.untracked) work.push(g.untracked + " new");
+  bits.push(work.length ? work.join(", ") : "clean");
+
+  if (g.upstream && (g.ahead || g.behind)){
+    const d = [];
+    if (g.ahead)  d.push("↑" + g.ahead);
+    if (g.behind) d.push("↓" + g.behind);
+    bits.push(d.join(" "));
+  }
+  if (g.last) bits.push("committed " + esc(rel(g.last.at)));
+
+  const lines = [g.root];
+  lines.push(g.upstream ? "tracking " + g.upstream
+                        : "no upstream branch — nothing to push to");
+  if (g.last) lines.push(g.last.short + "  " + g.last.subject);
+  lines.push("Read-only: cairn never stages, commits or pushes.");
+  /* Amber for anything that exists only on this machine — uncommitted work,
+     or commits that have not been pushed. Red is kept for a failure. */
+  chip(el, (!g.clean || g.ahead) ? "warn" : "ok", bits, lines.join("\n"));
+}
+
+function drawVersion(v){
+  /* The server's number, not one written down twice in two files. Until the
+     first status call answers, the footer just says the name. */
+  $("ver").textContent = v ? "cairn " + v : "cairn";
+  $("ver").title = "cairn" + (v ? " " + v : "")
+                 + " — a small browser editor for a folder of markdown notes";
+}
+
+function drawFoot(){
+  drawCloud();
+  drawGit();
   drawSync();
+}
+
+async function refreshStatus(){
+  try {
+    const r = await api("/api/status");
+    SYNC = r.sync; GIT = r.git; CLOUD = r.cloud;
+    drawVersion(r.version);
+  } catch (e){
+    SYNC = GIT = CLOUD = null;           /* server too old, or not unlocked */
+  }
+  drawFoot();
+  /* A sync the timer started is nobody's click, so this is where the activity
+     panel finds out there is something to follow. */
+  if (SYNC && SYNC.running) scheduleLog(0);
+}
+
+/* --------------------------- activity panel ---------------------------
+   Every line cairn has run, asked for by sequence number so an open panel
+   costs one small response per poll however long the script has been
+   talking.                                                            */
+
+const consoleEl = $("console"), consoleBtn = $("consoleBtn");
+let LOG_SEQ = 0, LOG_EMPTY = true, logSoon = null;
+
+function clock(t){
+  const d = new Date(t * 1000);
+  return String(d.getHours()).padStart(2, "0") + ":"
+       + String(d.getMinutes()).padStart(2, "0") + ":"
+       + String(d.getSeconds()).padStart(2, "0");
+}
+
+function addLines(lines){
+  if (!lines.length) return;
+  if (LOG_EMPTY){ consoleEl.innerHTML = ""; LOG_EMPTY = false; }
+  /* Follow the tail only for someone who is already at it — scrolling back to
+     read an error should not be yanked away by the next line. */
+  const stuck = consoleEl.scrollTop + consoleEl.clientHeight >= consoleEl.scrollHeight - 24;
+  for (const l of lines){
+    const d = document.createElement("div");
+    d.className = "ln " + (l.kind || "out");
+    bit(d, "t", clock(l.at));
+    bit(d, "m", l.text || "");
+    consoleEl.appendChild(d);
+  }
+  while (consoleEl.children.length > 600) consoleEl.firstChild.remove();
+  if (stuck) consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+async function logTick(){
+  let running = false;
+  try {
+    const r = await api("/api/run/log?since=" + LOG_SEQ);
+    LOG_SEQ = r.seq;
+    addLines(r.lines);
+    running = r.running;
+  } catch (e){ /* the next poll can try again */ }
+  runDot(running);
+  /* Follow a run closely; idle, only often enough that a panel left open
+     notices a timer-driven sync. Closed and idle: stop asking. */
+  if (running) scheduleLog(900);
+  else if (document.body.dataset.console === "on") scheduleLog(6000);
+}
+
+function scheduleLog(ms){
+  clearTimeout(logSoon);
+  logSoon = setTimeout(logTick, ms);
+}
+
+/* Something is running, whether or not the panel is open to show it. */
+function runDot(on){
+  let cv = consoleBtn.firstElementChild;
+  if (on){
+    if (!cv){ cv = document.createElement("canvas"); consoleBtn.prepend(cv); }
+    dot(cv, "run");
+  } else if (cv){
+    destroy(cv.__surf);
+    cv.remove();
+  }
 }
 
 async function doSync(){
@@ -1576,6 +2535,8 @@ async function doSync(){
   syncBtn.textContent = "…";
   dialRunning = true; animate(dialS, true);
   setStatus("syncing…");
+  panel("console", true);                    /* the point of pressing it */
+  scheduleLog(0);
   try {
     const record = (await api("/api/sync", {method: "POST"})).sync;
     /* The notes on disk may have changed underneath us, including the open
@@ -1595,13 +2556,63 @@ async function doSync(){
       const why = lines.length ? lines[lines.length - 1].slice(0, 140) : "";
       setStatus("sync failed" + (record.code == null ? "" : " (exit " + record.code + ")")
                 + (why ? " — " + why : ""), "error");
-      if (record.output) console.error(record.output);
+      /* The rest of it is in the activity panel above, which has been filling
+         since the run started. */
     }
   } catch (e){
     setStatus(e.message, "error");
   }
   dialRunning = false;
-  await refreshSync();
+  scheduleLog(0);
+  await refreshStatus();
+}
+
+/* ------------------------------- panels -------------------------------
+   Attributes, not classes: the mode switch owns body's dataset.mode and the
+   panels sit beside it there.                                          */
+
+const PANELS = {left: $("leftBtn"), right: $("rightBtn"), console: consoleBtn};
+
+function panel(which, on){
+  document.body.dataset[which] = on ? "on" : "off";
+  PANELS[which].classList.toggle("on", on);
+  PANELS[which].setAttribute("aria-pressed", on ? "true" : "false");
+  try { localStorage.setItem("cairn-panel-" + which, on ? "on" : "off"); } catch (e) {}
+  if (which === "console" && on){
+    LOG_EMPTY = !consoleEl.children.length || !!consoleEl.querySelector(".idle");
+    scheduleLog(0);
+  }
+  /* Narrow enough that a panel covers the note rather than sitting beside it:
+     two of them at once would cover it twice over. */
+  if (on && which !== "console" && window.innerWidth <= 900){
+    const other = which === "left" ? "right" : "left";
+    if (document.body.dataset[other] === "on") panel(other, false);
+  }
+  if (which !== "console"){
+    /* The panes just changed width; the surfaces inside them need it. */
+    requestAnimationFrame(() => { mapS.paint(); gripS.paint(); spy(); });
+  }
+}
+
+function toggle(which){ panel(which, document.body.dataset[which] !== "on"); }
+
+/* Ctrl-B, Ctrl-E and Ctrl-J are all real emacs bindings inside a text field on
+   a Mac — back a character, end of line, newline — so there the shortcut is
+   Command and nothing else. Save and New are Ctrl-S and Ctrl-N, which are not,
+   and take either. */
+const MAC = /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent);
+const mod = e => MAC ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+
+function restorePanels(){
+  const wide = window.innerWidth > 900;
+  for (const which of ["left", "right", "console"]){
+    let want = null;
+    try { want = localStorage.getItem("cairn-panel-" + which); } catch (e) {}
+    if (want === null) want = (which !== "console" && wide) ? "on" : "off";
+    /* A phone that once opened a panel on a desktop-width window should still
+       open on the note itself. */
+    panel(which, want === "on" && (wide || which === "console"));
+  }
 }
 
 /* ---------------------------- boot ---------------------------- */
@@ -1681,9 +2692,25 @@ async function codeAction(btn){
 
 /* ---------------------------- wiring ---------------------------- */
 listEl.addEventListener("click", e => {
+  const f = e.target.closest("[data-fold]");
+  if (f){
+    if (SHUT.has(f.dataset.fold)) SHUT.delete(f.dataset.fold);
+    else SHUT.add(f.dataset.fold);
+    rememberShut();
+    return drawList(qEl.value);
+  }
   const b = e.target.closest("[data-open]");
   if (b) open_(b.dataset.open);
 });
+
+$("outBody").addEventListener("click", e => {
+  const b = e.target.closest("[data-open]");
+  if (b){ e.preventDefault(); return open_(b.dataset.open); }
+  const j = e.target.closest("[data-line]");
+  if (j) gotoLine(+j.dataset.line);
+});
+$("viewWrap").addEventListener("scroll", spy, {passive: true});
+$("liveWrap").addEventListener("scroll", spy, {passive: true});
 listEl.addEventListener("keydown", e => {
   if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
   const items = [...listEl.querySelectorAll(".item")];
@@ -1717,6 +2744,16 @@ edEl.addEventListener("keydown", e => {
     mapS.paint();
   }
 });
+$("leftBtn").addEventListener("click", () => toggle("left"));
+$("rightBtn").addEventListener("click", () => toggle("right"));
+consoleBtn.addEventListener("click", () => toggle("console"));
+window.addEventListener("resize", () => {
+  /* Dragging a wide window narrow with both panels open would leave the note
+     under two overlays at once. */
+  if (window.innerWidth <= 900 && document.body.dataset.left === "on"
+      && document.body.dataset.right === "on") panel("right", false);
+  spy();
+}, {passive: true});
 qEl.addEventListener("input", () => drawList(qEl.value));
 qEl.addEventListener("keydown", e => {
   if (e.key === "ArrowDown" || e.key === "Enter"){
@@ -1733,8 +2770,8 @@ saveBtn.addEventListener("click", save);
 syncBtn.addEventListener("click", doSync);
 /* Re-render often enough that "in 25 minutes" stays honest, but only ask the
    server every few minutes — each status call spawns a systemctl.          */
-setInterval(drawSync, 30 * 1000);
-setInterval(refreshSync, 5 * 60 * 1000);
+setInterval(drawFoot, 30 * 1000);
+setInterval(refreshStatus, 60 * 1000);
 $("newBtn").addEventListener("click", openDialog);
 $("trashBtn").addEventListener("click", trashNote);
 $("dlgCancel").addEventListener("click", closeDialog);
@@ -1750,9 +2787,15 @@ document.addEventListener("keydown", e => {
     const i = MODES.findIndex(m => m[0] === mode);
     setMode(MODES[(i + 1) % MODES.length][0]);
   }
+  if (mod(e) && !e.altKey && !e.shiftKey){
+    if (e.key === "b"){ e.preventDefault(); toggle("left"); }
+    if (e.key === "e"){ e.preventDefault(); toggle("right"); }
+    if (e.key === "j"){ e.preventDefault(); toggle("console"); }
+  }
   if (e.key === "Escape"){
     if (dlgOpen()) closeDialog();
     else if (document.activeElement === qEl){ qEl.value = ""; drawList(""); qEl.blur(); }
+    else if (document.body.dataset.console === "on") panel("console", false);
   }
   if (e.key === "/" && document.activeElement !== qEl && document.activeElement !== edEl
       && !dlgOpen() && document.activeElement !== $("dlgName")){
@@ -1774,7 +2817,9 @@ window.addEventListener("beforeunload", e => {
   } catch (e) {}
   applyTheme(saved || "auto");
   if (split) setSplit(parseFloat(split)); else setSplit(50);
+  restorePanels();
   setMode(m && MODES.some(x => x[0] === m) ? m : "split", false);
+  drawVersion(null);
   redrawAll();
 
   try{
@@ -1786,9 +2831,9 @@ window.addEventListener("beforeunload", e => {
     if (readme) open_(readme.path);
     else setStatus("this vault has no notes yet — make one", "");
     redrawAll();
-    /* After the notes are up: the sidebar is usable without it, and it is the
-       one call that can spawn a subprocess on the server.                   */
-    refreshSync();
+    /* After the notes are up: the panels are usable without it, and it is the
+       one call that can spawn subprocesses on the server.                   */
+    refreshStatus();
   } catch (e){
     $("boot").classList.add("fail");
     $("bootMsg").textContent = "Could not reach the notes server: " + e.message;
