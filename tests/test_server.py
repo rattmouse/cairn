@@ -305,10 +305,13 @@ def test_tls(vault, port):
 
 # --------------------------------------------------------------------------
 # --------------------------------------------------------------------------
-# The terminal endpoint. No window is ever opened here: $CAIRN_TERMINAL points
-# the server at a shim that records what it was asked to launch. The pty checks
-# then run the real launcher script and prove the command is typed rather than
-# executed, which is the whole promise of the feature.
+# The terminal endpoint. No window is ever opened here: the server is pointed
+# at a shim that records what it was asked to launch. On Linux $CAIRN_TERMINAL
+# names that shim; on macOS the terminal is an application reached through
+# `open`, so $CAIRN_TERMINAL (an app name there) can't be a script -- instead a
+# fake `open` shadows the real one on PATH. Either way the shim writes the same
+# record. The pty checks then run the real launcher script and prove the
+# command is typed rather than executed, which is the whole promise.
 
 SHIM = """#!/bin/bash
 { echo "argv: $*"; echo "cwd: $PWD"; echo "env-cmd: ${CAIRN_CMD-none}"; } > "$CAIRN_RECORD"
@@ -387,15 +390,25 @@ def typed_not_run(launcher, home):
 
 def test_terminal(vault, port):
     print("\nopen in terminal")
-    shim = os.path.join(vault, "fake-terminal")
     record = os.path.join(vault, "launched.txt")
     home = os.path.join(vault, "home")
     os.makedirs(home, exist_ok=True)
+    os.environ["CAIRN_RECORD"] = record
+
+    mac = sys.platform == "darwin"
+    saved_path = os.environ["PATH"]
+    if mac:
+        fakebin = os.path.join(vault, "fakebin")
+        os.makedirs(fakebin, exist_ok=True)
+        shim = os.path.join(fakebin, "open")
+        os.environ.pop("CAIRN_TERMINAL", None)          # server resolves "Terminal"
+        os.environ["PATH"] = fakebin + os.pathsep + saved_path
+    else:
+        shim = os.path.join(vault, "fake-terminal")
+        os.environ["CAIRN_TERMINAL"] = shim
     with open(shim, "w") as f:
         f.write(SHIM)
     os.chmod(shim, 0o755)
-    os.environ["CAIRN_TERMINAL"] = shim
-    os.environ["CAIRN_RECORD"] = record
 
     mod = load_server()
     check("macOS opens an app rather than running a binary",
@@ -404,6 +417,7 @@ def test_terminal(vault, port):
     check("elsewhere the emulator is given the launcher",
           mod.terminal_argv("konsole", ["--workdir", "{cwd}", "-e"], "/tmp/t/launch", "/home/u")
           == ["konsole", "--workdir", "/home/u", "-e", "/tmp/t/launch"])
+    rc_name = mod.shell_parts()[0]                      # "rc.bash" or ".zshrc"
 
     p, token, _ = start(vault, port, ["--terminal-cwd", vault])
     try:
@@ -424,20 +438,24 @@ def test_terminal(vault, port):
         # out of the quoting and run something; it must arrive as characters.
         nasty = 'foo"; touch %s/PWNED; echo "' % vault
         s, rec, launcher, copied = launch(op, url, nasty, record)
+        cwds = ("cwd: " + vault, "cwd: " + os.path.realpath(vault))
         check("opens a terminal", s == 200)
         check("the emulator was actually launched", bool(rec))
-        check("launched at the requested directory", ("cwd: " + vault) in rec)
+        check("launched at the requested directory", any(c in rec for c in cwds))
         check("emulator is given the launcher script", launcher.endswith("/launch"))
         check("command is not in the emulator's argv", nasty not in rec.split("\n")[0])
         check("command is not in the environment either", "env-cmd: none" in rec)
 
         body = {f: open(os.path.join(copied, f)).read() for f in os.listdir(copied)}
+        exec_line = body["launch"].strip().splitlines()[-1]
         check("launcher runs an interactive shell, no command",
-              "exec bash --rcfile" in body["launch"] and body["launch"].endswith("-i\n")
-              and " -c " not in body["launch"])
-        check("launcher starts in the requested directory", ("cd " + vault) in body["launch"])
+              exec_line.startswith("exec ") and " -c " not in body["launch"]
+              and (exec_line.endswith(" -i") or exec_line.endswith(" -il")))
+        check("launcher starts in the requested directory",
+              ("cd " + vault) in body["launch"]
+              or ("cd " + os.path.realpath(vault)) in body["launch"])
         check("command lives in its own file, verbatim", body["cmd"] == nasty)
-        check("command is not written into the rcfile", nasty not in body["rc.bash"])
+        check("command is not written into the rcfile", nasty not in body[rc_name])
         check("nothing is left world-readable",
               all(oct(os.stat(os.path.join(copied, f)).st_mode)[-3:] in ("600", "700")
                   for f in body))
@@ -478,6 +496,8 @@ def test_terminal(vault, port):
         p.terminate(); p.wait(timeout=5)
         os.environ.pop("CAIRN_TERMINAL", None)
         os.environ.pop("CAIRN_RECORD", None)
+        os.environ["PATH"] = saved_path
+
 
 def main():
     if not os.path.isfile(SERVER):
