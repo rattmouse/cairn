@@ -3,226 +3,359 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Notes</title>
+<title>cairn</title>
 <style>
+/* ============================ palette ============================
+   Every colour lives here twice: once for paper, once for slate. The
+   canvas widgets read these same variables through getComputedStyle,
+   so a theme flip repaints the drawn controls along with the CSS.   */
 :root{
-  --bg:#fbfaf8; --panel:#f2efea; --edge:#e2ddd4; --ink:#22201d; --dim:#6d675e;
-  --accent:#8a5a2b; --accent-soft:#f0e4d6; --code-bg:#f0ece5; --sel:#e6ded1;
+  --bg:#fbfaf8; --panel:#f4f1ec; --raise:#ffffff; --edge:#e3ded4; --edge-soft:#eee9e1;
+  --ink:#22201d; --dim:#6d675e; --faint:#9b948a;
+  --accent:#8a5a2b; --accent-hi:#a86c33; --accent-soft:#f1e6d8;
+  --code-bg:#f1ede6; --sel:#e8e1d4;
   --note:#3d6a8f; --note-bg:#e8f0f6; --warn:#9a5b25; --warn-bg:#faeee0;
   --todo:#6b5a8f; --todo-bg:#efeaf7; --ok:#3f7d4f; --bad:#a5433a;
+  --shadow:0 1px 2px rgba(40,32,20,.06),0 8px 24px rgba(40,32,20,.07);
+  --shadow-lg:0 24px 60px rgba(40,32,20,.22);
+  --r:9px;
 }
-@media (prefers-color-scheme: dark){
-  :root{
-    --bg:#17161a; --panel:#1e1d22; --edge:#32303a; --ink:#e6e2dc; --dim:#98938c;
-    --accent:#d69a63; --accent-soft:#3a2e22; --code-bg:#232228; --sel:#33303c;
+:root[data-theme="dark"]{
+  --bg:#17161a; --panel:#1d1c21; --raise:#26242b; --edge:#33313b; --edge-soft:#282730;
+  --ink:#e7e3dd; --dim:#9a958e; --faint:#6f6a64;
+  --accent:#d69a63; --accent-hi:#e6ac74; --accent-soft:#3a2e22;
+  --code-bg:#212027; --sel:#302e39;
+  --note:#87b4d8; --note-bg:#1d2a35; --warn:#e0a06a; --warn-bg:#33261a;
+  --todo:#b4a2dc; --todo-bg:#282235; --ok:#7fc08e; --bad:#e08a80;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35);
+  --shadow-lg:0 24px 60px rgba(0,0,0,.55);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#17161a; --panel:#1d1c21; --raise:#26242b; --edge:#33313b; --edge-soft:#282730;
+    --ink:#e7e3dd; --dim:#9a958e; --faint:#6f6a64;
+    --accent:#d69a63; --accent-hi:#e6ac74; --accent-soft:#3a2e22;
+    --code-bg:#212027; --sel:#302e39;
     --note:#87b4d8; --note-bg:#1d2a35; --warn:#e0a06a; --warn-bg:#33261a;
     --todo:#b4a2dc; --todo-bg:#282235; --ok:#7fc08e; --bad:#e08a80;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35);
+    --shadow-lg:0 24px 60px rgba(0,0,0,.55);
   }
 }
+
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--ink);
   font:15px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Inter,system-ui,sans-serif;
   -webkit-font-smoothing:antialiased;overflow:hidden}
-button{font:inherit;color:inherit}
+button,input,select,textarea{font:inherit;color:inherit}
+::selection{background:var(--sel)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+/* thin scrollbars everywhere, in both themes */
+*{scrollbar-width:thin;scrollbar-color:var(--edge) transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--edge);border:3px solid transparent;
+  background-clip:content-box;border-radius:8px}
+::-webkit-scrollbar-thumb:hover{background:var(--faint);border:3px solid transparent;
+  background-clip:content-box}
 
 #app{display:flex;height:100vh}
 
-/* ---------- sidebar ---------- */
-#side{width:290px;flex:0 0 290px;background:var(--panel);border-right:1px solid var(--edge);
-  display:flex;flex-direction:column;overflow:hidden}
-#brand{padding:14px 16px 10px;border-bottom:1px solid var(--edge);
-  display:flex;align-items:baseline;gap:8px}
-#brand h1{margin:0;font-size:13px;letter-spacing:.07em;text-transform:uppercase;
-  color:var(--dim);font-weight:700}
-#brand span{font-size:11px;color:var(--dim);margin-left:auto}
-#tools{padding:10px 14px;border-bottom:1px solid var(--edge);display:flex;flex-direction:column;gap:8px}
-#q{width:100%;padding:7px 10px;font-size:13px;color:var(--ink);background:var(--bg);
-  border:1px solid var(--edge);border-radius:7px;outline:none}
-#q:focus{border-color:var(--accent)}
-.btn{padding:6px 11px;font-size:12.5px;background:var(--bg);border:1px solid var(--edge);
-  border-radius:7px;cursor:pointer}
-.btn:hover{border-color:var(--accent);color:var(--accent)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn.primary:hover{opacity:.9;color:#fff}
-.btn:disabled{opacity:.45;cursor:default}
-.btn.danger:hover{border-color:var(--bad);color:var(--bad)}
-#list{flex:1;overflow-y:auto;padding:6px 0 30px}
-#sync{padding:10px 14px;border-top:1px solid var(--edge);
-  display:flex;flex-direction:column;gap:6px}
-#sync[hidden]{display:none}
-#syncInfo{font-size:11px;color:var(--dim);line-height:1.6}
-#syncInfo b{font-weight:600;color:var(--ink)}
-#syncInfo .bad{color:var(--bad);font-weight:600}
-.grp{padding:13px 16px 4px;font-size:10.5px;font-weight:700;letter-spacing:.06em;
-  text-transform:uppercase;color:var(--dim)}
-.item{display:block;width:100%;text-align:left;padding:6px 16px;font-size:13.5px;
-  line-height:1.4;background:none;border:0;cursor:pointer;border-left:3px solid transparent}
+/* ---------------------------- sidebar ---------------------------- */
+#side{width:292px;flex:0 0 292px;background:var(--panel);
+  border-right:1px solid var(--edge);display:flex;flex-direction:column;overflow:hidden}
+#brand{padding:13px 14px 12px;display:flex;align-items:center;gap:10px}
+#mark{width:26px;height:30px;flex:0 0 26px;display:block}
+#brand .wm{display:flex;flex-direction:column;line-height:1.15;margin-right:auto}
+#brand h1{margin:0;font-size:14px;letter-spacing:.16em;text-transform:lowercase;
+  font-weight:700;color:var(--ink)}
+#tally{font-size:10.5px;color:var(--faint);letter-spacing:.04em}
+#themeBtn{width:30px;height:30px;padding:0;background:none;border:0;cursor:pointer;
+  border-radius:8px;display:block}
+#themeBtn:hover{background:var(--sel)}
+#themeBtn canvas{width:30px;height:30px;display:block}
+
+#tools{padding:2px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.field{position:relative;display:flex;align-items:center}
+.field canvas.ic{position:absolute;left:9px;width:14px;height:14px;pointer-events:none}
+#q{width:100%;padding:8px 30px 8px 29px;font-size:13px;background:var(--bg);
+  border:1px solid var(--edge);border-radius:var(--r);outline:none;
+  transition:border-color .12s,box-shadow .12s}
+#q::-webkit-search-cancel-button{display:none}
+#q:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+#qClear{position:absolute;right:5px;width:20px;height:20px;padding:0;border:0;
+  background:none;cursor:pointer;border-radius:5px;display:none}
+#qClear canvas{width:20px;height:20px;display:block}
+.field.has-q #qClear{display:block}
+#qClear:hover{background:var(--sel)}
+
+.row{display:flex;gap:7px}
+.btn{padding:7px 12px;font-size:12.5px;background:var(--bg);border:1px solid var(--edge);
+  border-radius:var(--r);cursor:pointer;transition:border-color .12s,color .12s,background .12s;
+  white-space:nowrap}
+.btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.btn:active:not(:disabled){transform:translateY(1px)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn.primary:hover:not(:disabled){background:var(--accent-hi);border-color:var(--accent-hi);color:#fff}
+.btn:disabled{opacity:.42;cursor:default}
+.btn.danger:hover:not(:disabled){border-color:var(--bad);color:var(--bad)}
+
+#list{flex:1;overflow-y:auto;padding:2px 0 26px;scrollbar-gutter:stable}
+.grp{padding:14px 16px 5px;font-size:10px;font-weight:700;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--faint);display:flex;align-items:center;gap:7px}
+.grp::after{content:"";flex:1;height:1px;background:var(--edge)}
+.item{display:flex;align-items:center;gap:7px;width:100%;text-align:left;
+  padding:6px 14px 6px 13px;font-size:13.5px;line-height:1.35;background:none;border:0;
+  cursor:pointer;border-left:3px solid transparent;color:var(--ink)}
 .item:hover{background:var(--sel)}
 .item.on{background:var(--accent-soft);border-left-color:var(--accent);font-weight:600}
-.item .dot{color:var(--accent);font-weight:700}
-.item .sub{display:block;font-size:11px;color:var(--dim);font-weight:400;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item canvas.pip{width:8px;height:8px;flex:0 0 8px;display:block}
+.item mark{background:var(--accent-soft);color:var(--accent);
+  border-radius:3px;padding:0 1px;font-weight:700}
+.item.on mark{background:transparent}
+.empty{padding:22px 16px;font-size:12.5px;color:var(--faint);text-align:center;line-height:1.7}
 
-/* ---------- main ---------- */
+#sync{padding:10px 14px;border-top:1px solid var(--edge);display:flex;align-items:center;gap:10px}
+#sync[hidden]{display:none}
+#dial{width:30px;height:30px;flex:0 0 30px;display:block}
+#syncInfo{font-size:11px;color:var(--dim);line-height:1.55;flex:1;min-width:0}
+#syncInfo b{font-weight:600;color:var(--ink)}
+#syncInfo .bad{color:var(--bad);font-weight:600}
+#syncBtn{padding:5px 9px;font-size:11.5px}
+
+/* ------------------------------ main ------------------------------ */
 #main{flex:1;display:flex;flex-direction:column;min-width:0}
-#bar{display:flex;align-items:center;gap:10px;padding:9px 18px;
+#bar{display:flex;align-items:center;gap:12px;padding:9px 16px;
   border-bottom:1px solid var(--edge);background:var(--panel)}
+#crumbWrap{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
 #crumb{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
-  color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
-#status{font-size:11.5px;color:var(--dim);white-space:nowrap}
-#status.dirty{color:var(--accent);font-weight:600}
+  color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#crumb .dir{color:var(--faint)}
+#stats{font-size:10px;color:var(--faint);letter-spacing:.03em;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+#state{display:flex;align-items:center;gap:6px;min-width:0}
+#orb{width:15px;height:15px;flex:0 0 15px;display:block}
+#status{font-size:11.5px;color:var(--dim);white-space:nowrap;max-width:44ch;
+  overflow:hidden;text-overflow:ellipsis}
+#status.dirty{color:var(--accent)}
 #status.saved{color:var(--ok)}
 #status.error{color:var(--bad);font-weight:600}
-.seg{display:flex;border:1px solid var(--edge);border-radius:7px;overflow:hidden}
-.seg button{padding:5px 11px;font-size:12px;background:var(--bg);border:0;cursor:pointer}
-.seg button+button{border-left:1px solid var(--edge)}
-.seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+#seg{width:186px;height:30px;flex:0 0 186px;display:block;border-radius:var(--r);cursor:pointer}
 
-#panes{flex:1;display:flex;min-height:0}
-#editWrap,#viewWrap{flex:1;min-width:0;overflow:auto}
-#editWrap{display:none;border-right:1px solid var(--edge)}
-#viewWrap{display:none}
-body.mode-edit  #editWrap{display:block}
-body.mode-view  #viewWrap{display:block}
-body.mode-split #editWrap,body.mode-split #viewWrap{display:block}
-body.mode-edit #editWrap{border-right:0}
+#panes{flex:1;display:flex;min-height:0;position:relative}
+#editWrap,#viewWrap{min-width:0;position:relative;flex:1 1 0}
+#editWrap{display:none}
+#viewWrap{display:none;overflow:auto}
+body[data-mode="edit"] #editWrap{display:block}
+body[data-mode="view"] #viewWrap{display:block}
+body[data-mode="split"] #editWrap,body[data-mode="split"] #viewWrap{display:block}
+body[data-mode="split"] #editWrap{flex:0 0 var(--split,50%)}
+#grip{display:none;flex:0 0 9px;cursor:col-resize;background:var(--bg);
+  border-left:1px solid var(--edge);border-right:1px solid var(--edge);
+  position:relative;touch-action:none}
+body[data-mode="split"] #grip{display:block}
+#grip canvas{width:9px;height:100%;display:block}
+#grip:hover,#grip.drag{background:var(--panel)}
+body.resizing{cursor:col-resize;user-select:none}
 
-#ed{width:100%;height:100%;min-height:100%;padding:26px 28px 140px;border:0;outline:none;
-  resize:none;background:var(--bg);color:var(--ink);tab-size:4;
+#ed{width:100%;height:100%;padding:26px 34px 40vh 30px;border:0;outline:none;resize:none;
+  background:var(--bg);color:var(--ink);tab-size:4;display:block;overflow:auto;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.5px;line-height:1.7}
-#view{max-width:780px;margin:0 auto;padding:30px 34px 140px}
+#ed::placeholder{color:var(--faint)}
+#map{position:absolute;top:0;right:0;width:22px;height:100%;display:block;
+  cursor:pointer;opacity:.85;transition:opacity .15s;touch-action:none}
+#map:hover{opacity:1}
+#view{max-width:760px;margin:0 auto;padding:30px 34px 40vh}
 
-/* ---------- rendered markdown ---------- */
-#view h1{font-size:26px;margin:30px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--edge)}
+/* ------------------------ rendered markdown ------------------------ */
+#view h1{font-size:26px;line-height:1.25;margin:32px 0 14px;padding-bottom:7px;
+  border-bottom:1px solid var(--edge);letter-spacing:-.01em}
 #view h1:first-child{margin-top:0}
-#view h2{font-size:19px;margin:30px 0 10px}
-#view h3{font-size:15.5px;margin:22px 0 8px;color:var(--dim);
-  text-transform:uppercase;letter-spacing:.04em}
+#view h2{font-size:19px;margin:30px 0 10px;letter-spacing:-.005em}
+#view h3{font-size:12px;margin:24px 0 8px;color:var(--dim);font-weight:700;
+  text-transform:uppercase;letter-spacing:.08em}
 #view p{margin:0 0 13px}
 #view ul,#view ol{margin:0 0 13px;padding-left:24px}
 #view li{margin:3px 0}
-#view li.task{list-style:none;margin-left:-20px}
-#view li.task input{margin-right:7px}
-#view a{color:var(--accent)}
+#view li::marker{color:var(--faint)}
+#view li.task{list-style:none;margin-left:-21px}
+#view li.task canvas{width:15px;height:15px;display:inline-block;vertical-align:-3px;
+  margin-right:7px;cursor:pointer;border-radius:5px}
+#view li.task canvas:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#view li.task.done>span{color:var(--dim);text-decoration:line-through;
+  text-decoration-color:var(--faint)}
+#view a{color:var(--accent);text-underline-offset:2px}
 #view hr{border:0;border-top:1px solid var(--edge);margin:26px 0}
-#view blockquote{margin:0 0 13px;padding:2px 0 2px 15px;border-left:3px solid var(--edge);color:var(--dim)}
+#view blockquote{margin:0 0 13px;padding:2px 0 2px 15px;border-left:3px solid var(--edge);
+  color:var(--dim)}
 #view code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
-  background:var(--code-bg);padding:1.5px 5px;border-radius:4px}
-#view pre{background:var(--code-bg);border:1px solid var(--edge);border-radius:8px;
-  padding:12px 14px;overflow-x:auto;margin:0 0 15px}
-#view pre code{background:none;padding:0;font-size:12.5px;line-height:1.55}
-.cb{position:relative;margin:0 0 15px}
-.cb pre{margin:0}
-.cb .cbtools{position:absolute;top:5px;right:5px;display:flex;gap:4px;padding:3px;
-  background:var(--panel);border:1px solid var(--edge);border-radius:8px;
-  box-shadow:0 2px 8px rgba(0,0,0,.14);opacity:0;transition:opacity .12s}
-.cb:hover .cbtools,.cb:focus-within .cbtools{opacity:1}
-@media (hover:none){.cb .cbtools{opacity:1}}
-.cbtools button{padding:2px 9px;font-size:11px;line-height:1.6;color:var(--dim);
-  background:var(--bg);border:1px solid var(--edge);border-radius:6px;cursor:pointer;
-  white-space:nowrap}
+  background:var(--code-bg);padding:1.5px 5px;border-radius:5px}
+#view pre{background:var(--code-bg);border:1px solid var(--edge-soft);border-radius:10px;
+  padding:13px 15px;overflow-x:auto;margin:0}
+#view pre code{background:none;padding:0;font-size:12.5px;line-height:1.6}
+.cb{position:relative;margin:0 0 16px}
+.cb .cbtools{position:absolute;top:6px;right:6px;display:flex;gap:4px;padding:3px;
+  background:var(--panel);border:1px solid var(--edge);border-radius:9px;
+  box-shadow:var(--shadow);opacity:0;transform:translateY(-2px);
+  transition:opacity .13s,transform .13s}
+.cb:hover .cbtools,.cb:focus-within .cbtools{opacity:1;transform:none}
+@media (hover:none){.cb .cbtools{opacity:1;transform:none}}
+.cbtools button{display:flex;align-items:center;gap:5px;padding:3px 9px 3px 6px;
+  font-size:11px;line-height:1.6;color:var(--dim);background:var(--bg);
+  border:1px solid var(--edge);border-radius:7px;cursor:pointer;white-space:nowrap}
+.cbtools button canvas{width:12px;height:12px;display:block}
 .cbtools button:hover{border-color:var(--accent);color:var(--accent)}
 .cbtools button.done{border-color:var(--ok);color:var(--ok)}
 .cbtools button.bad{border-color:var(--bad);color:var(--bad)}
-#view table{border-collapse:collapse;margin:0 0 16px;font-size:13.5px;display:block;overflow-x:auto}
-#view th,#view td{border:1px solid var(--edge);padding:6px 10px;text-align:left;vertical-align:top}
+#view table{border-collapse:collapse;margin:0 0 16px;font-size:13.5px;display:block;
+  overflow-x:auto}
+#view th,#view td{border:1px solid var(--edge);padding:7px 11px;text-align:left;
+  vertical-align:top}
 #view th{background:var(--panel);font-weight:600}
-#view img{max-width:100%;border:1px solid var(--edge);border-radius:8px;margin:5px 0 16px;display:block}
+#view img{max-width:100%;border:1px solid var(--edge);border-radius:10px;margin:5px 0 16px;
+  display:block}
 .wl{color:var(--accent);text-decoration:none;border-bottom:1px solid currentColor;cursor:pointer}
-.wl.dead{color:var(--dim);border-bottom-style:dotted;cursor:help}
-.callout{border-left:3px solid var(--note);background:var(--note-bg);border-radius:0 8px 8px 0;
-  padding:11px 15px;margin:0 0 16px}
-.callout .ct{font-weight:700;font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;
-  color:var(--note);margin-bottom:5px}
-.callout p:last-child{margin-bottom:0}
+.wl.dead{color:var(--faint);border-bottom-style:dotted;cursor:help}
+.callout{border-left:3px solid var(--note);background:var(--note-bg);
+  border-radius:0 10px 10px 0;padding:12px 16px;margin:0 0 16px}
+.callout .ct{font-weight:700;font-size:11px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--note);margin-bottom:6px}
+.callout p:last-child,.callout ul:last-child,.callout ol:last-child{margin-bottom:0}
 .callout-warning{border-left-color:var(--warn);background:var(--warn-bg)}
 .callout-warning .ct{color:var(--warn)}
 .callout-todo{border-left-color:var(--todo);background:var(--todo-bg)}
 .callout-todo .ct{color:var(--todo)}
-.fm{font-size:11.5px;color:var(--dim);background:var(--panel);border:1px solid var(--edge);
-  border-radius:8px;padding:8px 12px;margin:0 0 20px;
+.fm{font-size:11.5px;color:var(--dim);background:var(--panel);border:1px solid var(--edge-soft);
+  border-radius:10px;padding:9px 13px;margin:0 0 22px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
 
-/* ---------- dialog ---------- */
-#veil{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;
-  align-items:center;justify-content:center;z-index:50}
-#veil.open{display:flex}
-#dlg{background:var(--bg);border:1px solid var(--edge);border-radius:12px;
-  padding:22px;width:min(440px,92vw);box-shadow:0 18px 50px rgba(0,0,0,.3)}
+/* ------------------------------ dialog ------------------------------ */
+#veil{position:fixed;inset:0;background:rgba(20,16,10,.45);display:none;
+  align-items:center;justify-content:center;z-index:50;
+  backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)}
+#veil.open{display:flex;animation:fade .13s ease-out}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes rise{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+#dlg{background:var(--bg);border:1px solid var(--edge);border-radius:14px;padding:22px;
+  width:min(440px,92vw);box-shadow:var(--shadow-lg);animation:rise .16s ease-out}
 #dlg h2{margin:0 0 4px;font-size:16px}
-#dlg p{margin:0 0 16px;font-size:12.5px;color:var(--dim)}
-#dlg label{display:block;font-size:11.5px;color:var(--dim);margin:10px 0 4px;
-  text-transform:uppercase;letter-spacing:.05em;font-weight:600}
-#dlg input,#dlg select{width:100%;padding:8px 10px;font:inherit;font-size:13.5px;
-  background:var(--panel);color:var(--ink);border:1px solid var(--edge);border-radius:7px;outline:none}
-#dlg input:focus,#dlg select:focus{border-color:var(--accent)}
-#dlgErr{color:var(--bad);font-size:12px;min-height:16px;margin-top:8px}
-#dlgBtns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
-#boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
-  background:var(--bg);color:var(--dim);font-size:14px;z-index:80}
+#dlg p{margin:0 0 14px;font-size:12.5px;color:var(--dim);line-height:1.55}
+#dlg label{display:block;font-size:10.5px;color:var(--faint);margin:12px 0 5px;
+  text-transform:uppercase;letter-spacing:.08em;font-weight:700}
+#dlgName{width:100%;padding:9px 11px;font-size:13.5px;background:var(--panel);
+  border:1px solid var(--edge);border-radius:var(--r);outline:none}
+#dlgName:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+#dlgErr{color:var(--bad);font-size:12px;min-height:17px;margin-top:9px}
+#dlgBtns{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+
+/* custom dropdown — a button plus a popup, no native select anywhere */
+.sel{position:relative}
+.sel .head{display:flex;align-items:center;gap:8px;width:100%;padding:9px 11px;
+  font-size:13.5px;text-align:left;background:var(--panel);border:1px solid var(--edge);
+  border-radius:var(--r);cursor:pointer}
+.sel .head span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sel .head canvas{width:10px;height:10px;display:block;transition:transform .15s}
+.sel.open .head{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.sel.open .head canvas{transform:rotate(180deg)}
+.sel .pop{position:absolute;left:0;right:0;top:calc(100% + 5px);z-index:5;max-height:210px;
+  overflow-y:auto;padding:5px;background:var(--raise);border:1px solid var(--edge);
+  border-radius:11px;box-shadow:var(--shadow);display:none}
+.sel.open .pop{display:block;animation:rise .12s ease-out}
+.sel .opt{display:block;width:100%;padding:7px 10px;font-size:13px;text-align:left;
+  background:none;border:0;border-radius:7px;cursor:pointer;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.sel .opt:hover,.sel .opt.cur{background:var(--sel)}
+.sel .opt.sel{background:var(--accent-soft);color:var(--accent);font-weight:600}
+
+#boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:14px;background:var(--bg);color:var(--dim);font-size:13px;
+  z-index:80;letter-spacing:.04em}
+#boot canvas{width:34px;height:40px;display:block}
+#boot.fail{color:var(--bad);padding:0 30px;text-align:center;line-height:1.7}
+
 @media (max-width:900px){
   #app{flex-direction:column}
-  #side{width:100%;flex:0 0 auto;max-height:40vh;border-right:0;border-bottom:1px solid var(--edge)}
-  body.mode-split #editWrap{display:none}
+  #side{width:100%;flex:0 0 auto;max-height:40vh;border-right:0;
+    border-bottom:1px solid var(--edge)}
+  body[data-mode="split"] #editWrap{display:none}
+  body[data-mode="split"] #grip{display:none}
+  body[data-mode="split"] #viewWrap{flex:1 1 auto}
   /* Stacked, the sidebar only gets 40vh, and a two-line sync block was tall
-     enough to push its own second line out through #side's overflow:hidden —
-     the next-sync time was rendered but invisible. Side by side it fits, and
-     the note list keeps the room it just gave up. */
-  #sync{flex-direction:row;align-items:center;gap:10px;padding:8px 14px}
-  #sync button{flex:0 0 auto}
+     enough to push its own second line out through #side's overflow:hidden.
+     Side by side it fits, and the note list keeps the room it gave up.     */
+  #sync{padding:8px 14px}
   #syncInfo{line-height:1.4}
-  /* Give the note list back the height the sync row costs it, but only where
-     there is a sync row — a cairn started without --sync-cmd keeps the
-     original 40vh. */
   body[data-sync] #side{max-height:47vh}
+  #bar{gap:8px;padding:8px 12px}
+  #seg{width:150px;flex:0 0 150px}
+  #status{max-width:16ch}
+  #view{padding:22px 20px 40vh}
+  #ed{padding:20px 30px 40vh 18px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms !important;transition-duration:.01ms !important}
 }
 </style>
 </head>
-<body class="mode-split">
-<div id="boot">loading vault…</div>
+<body data-mode="split">
+<div id="boot"><canvas id="bootMark" aria-hidden="true"></canvas><span id="bootMsg">reading the vault…</span></div>
 
 <div id="app">
   <aside id="side">
-    <div id="brand"><h1>Notes</h1><span id="tally"></span></div>
+    <div id="brand">
+      <canvas id="mark" aria-hidden="true"></canvas>
+      <span class="wm"><h1>cairn</h1><span id="tally"></span></span>
+      <button id="themeBtn" type="button" title="Theme: follow system"
+        aria-label="Change theme"><canvas aria-hidden="true"></canvas></button>
+    </div>
     <div id="tools">
-      <input id="q" type="search" placeholder="Search…" autocomplete="off" spellcheck="false">
-      <div style="display:flex;gap:6px">
+      <div class="field" id="qField">
+        <canvas class="ic" id="qIcon" aria-hidden="true"></canvas>
+        <input id="q" type="search" placeholder="Search notes…  /" autocomplete="off"
+          spellcheck="false" aria-label="Search notes">
+        <button id="qClear" type="button" aria-label="Clear search"><canvas aria-hidden="true"></canvas></button>
+      </div>
+      <div class="row">
         <button class="btn" id="newBtn" style="flex:1">New note</button>
-        <button class="btn danger" id="trashBtn" title="Move to .trash/">Trash</button>
+        <button class="btn danger" id="trashBtn" title="Move to .trash/" disabled>Trash</button>
       </div>
     </div>
     <div id="list"></div>
     <div id="sync" hidden>
-      <button class="btn" id="syncBtn">Sync now</button>
+      <canvas id="dial" aria-hidden="true"></canvas>
       <div id="syncInfo"></div>
+      <button class="btn" id="syncBtn">Sync</button>
     </div>
   </aside>
 
   <main id="main">
     <div id="bar">
-      <div id="crumb"></div>
-      <div id="status"></div>
-      <div class="seg">
-        <button data-mode="edit">Edit</button>
-        <button data-mode="split" class="on">Split</button>
-        <button data-mode="view">Preview</button>
-      </div>
+      <div id="crumbWrap"><div id="crumb"></div><div id="stats"></div></div>
+      <div id="state"><canvas id="orb" aria-hidden="true"></canvas>
+        <div id="status" role="status" aria-live="polite"></div></div>
+      <canvas id="seg" tabindex="0" role="tablist" aria-label="View mode"></canvas>
       <button class="btn primary" id="saveBtn" disabled>Save</button>
     </div>
     <div id="panes">
-      <div id="editWrap"><textarea id="ed" spellcheck="false" placeholder="Pick a note…"></textarea></div>
+      <div id="editWrap">
+        <textarea id="ed" spellcheck="false" placeholder="Pick a note from the left…"></textarea>
+        <canvas id="map" aria-hidden="true" title="Document map — click or drag to scroll"></canvas>
+      </div>
+      <div id="grip" role="separator" aria-label="Resize panes" tabindex="0"><canvas aria-hidden="true"></canvas></div>
       <div id="viewWrap"><div id="view"></div></div>
     </div>
   </main>
 </div>
 
-<div id="veil"><div id="dlg">
+<div id="veil"><div id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
   <h2 id="dlgTitle">New note</h2>
   <p id="dlgHint">Creates a markdown file with frontmatter already filled in.</p>
   <div id="dlgBody">
-    <label for="dlgFolder">Folder</label>
-    <select id="dlgFolder"></select>
+    <label id="dlgFolderLabel">Folder</label>
+    <div class="sel" id="dlgFolder"></div>
     <label for="dlgName">Title</label>
     <input id="dlgName" placeholder="Note title" autocomplete="off">
   </div>
@@ -236,6 +369,693 @@ body.mode-edit #editWrap{border-right:0}
 <script>
 "use strict";
 const TOKEN = "__NOTES_TOKEN__";
+const $ = id => document.getElementById(id);
+
+/* ========================= theme =========================
+   Three states: follow the system, force paper, force slate. The choice is
+   an attribute on <html> so the CSS variables and the canvas widgets — which
+   read those same variables — always agree.                              */
+
+const THEMES = ["auto", "light", "dark"];
+const SYSDARK = window.matchMedia("(prefers-color-scheme: dark)");
+let theme = "auto";
+
+function applyTheme(t){
+  theme = THEMES.includes(t) ? t : "auto";
+  if (theme === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+  try { localStorage.setItem("cairn-theme", theme); } catch (e) {}
+  $("themeBtn").title = "Theme: " + (theme === "auto" ? "follow system" : theme)
+                      + " (click to change)";
+  readPalette();
+  redrawAll();
+}
+const isDark = () => theme === "dark" || (theme === "auto" && SYSDARK.matches);
+SYSDARK.addEventListener("change", () => { if (theme === "auto"){ readPalette(); redrawAll(); } });
+
+/* ===================== canvas toolkit =====================
+   Every drawn control goes through here: it owns the device-pixel scaling,
+   the repaint on resize and on theme change, and the shared animation loop,
+   so an individual widget is only ever a draw function.                  */
+
+const PAL = {};
+const PALKEYS = ["bg","panel","raise","edge","edge-soft","ink","dim","faint","accent",
+                 "accent-hi","accent-soft","code-bg","sel","note","warn","todo","ok","bad"];
+function readPalette(){
+  const cs = getComputedStyle(document.documentElement);
+  for (const k of PALKEYS) PAL[k] = cs.getPropertyValue("--" + k).trim() || "#888";
+}
+const c = k => PAL[k] || "#888";
+
+const SURF = new Set();
+const LIVE = new Set();                 /* surfaces animating this frame */
+let ticking = false;
+
+function tick(){
+  ticking = LIVE.size > 0;
+  for (const s of [...LIVE]){
+    if (s.state.tween) s.state.tween();   /* advance before painting it */
+    s.paint();
+  }
+  if (ticking) requestAnimationFrame(tick);
+}
+function animate(s, on){
+  if (on){ LIVE.add(s); if (!ticking){ ticking = true; requestAnimationFrame(tick); } }
+  else LIVE.delete(s);
+}
+
+const RO = new ResizeObserver(entries => {
+  for (const e of entries){
+    const s = e.target.__surf;
+    if (s) s.paint();
+  }
+});
+
+function surface(canvas, draw){
+  const s = {el: canvas, draw, w: 0, h: 0, state: {}};
+  s.paint = function(){
+    const r = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+    if (!r.width || !r.height) return;              /* hidden pane: nothing to draw */
+    const d = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    if (canvas.width !== Math.round(w * d) || canvas.height !== Math.round(h * d)){
+      canvas.width = Math.round(w * d);
+      canvas.height = Math.round(h * d);
+    }
+    const g = canvas.getContext("2d");
+    g.setTransform(d, 0, 0, d, 0, 0);
+    g.clearRect(0, 0, w, h);
+    s.w = w; s.h = h;
+    draw(g, w, h, s);
+  };
+  canvas.__surf = s;
+  SURF.add(s);
+  RO.observe(canvas);
+  return s;
+}
+function redrawAll(){ for (const s of SURF) s.paint(); }
+window.addEventListener("resize", redrawAll);
+
+/* Rounded rectangle that works with or without ctx.roundRect. */
+function rr(g, x, y, w, h, r){
+  r = Math.min(r, w / 2, h / 2);
+  g.beginPath();
+  if (g.roundRect){ g.roundRect(x, y, w, h, r); return; }
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const now = () => performance.now();
+
+/* A tween that repaints one surface until it lands. */
+function tween(s, ms, step){
+  const t0 = now();
+  animate(s, true);
+  s.state.tween = () => {
+    const t = clamp((now() - t0) / ms, 0, 1);
+    step(ease(t));
+    if (t >= 1){ s.state.tween = null; animate(s, false); }
+  };
+}
+
+/* ======================= drawn glyphs ======================= */
+
+/* The brand: five stones stacked into a cairn, biggest at the base. The
+   shapes are fixed numbers rather than random so the mark never wobbles. */
+const STONES = [
+  [0.50, 0.90, 0.46, 0.115, -0.05],
+  [0.47, 0.715, 0.38, 0.105,  0.08],
+  [0.53, 0.545, 0.31, 0.095, -0.10],
+  [0.47, 0.395, 0.235, 0.085, 0.13],
+  [0.50, 0.265, 0.155, 0.075, 0.00]
+];
+function drawCairn(g, w, h, tint, lift){
+  lift = lift || 0;
+  STONES.forEach((st, i) => {
+    const [cx, cy, sw, sh, rot] = st;
+    const x = cx * w, y = cy * h - lift * i * 0.6;
+    g.save();
+    g.translate(x, y);
+    g.rotate(rot);
+    g.beginPath();
+    g.ellipse(0, 0, sw * w / 2, sh * h, 0, 0, Math.PI * 2);
+    g.fillStyle = i === STONES.length - 1 ? tint : c("dim");
+    g.globalAlpha = i === STONES.length - 1 ? 1 : 0.34 + i * 0.1;
+    g.fill();
+    g.restore();
+  });
+}
+
+function drawGlass(g, w, h, col, lw){
+  const r = w * 0.29, cx = w * 0.44, cy = h * 0.44;
+  g.strokeStyle = col;
+  g.lineWidth = lw || 1.5;
+  g.lineCap = "round";
+  g.beginPath();
+  g.arc(cx, cy, r, 0, Math.PI * 2);
+  g.moveTo(cx + r * 0.72, cy + r * 0.72);
+  g.lineTo(w * 0.86, h * 0.86);
+  g.stroke();
+}
+
+function drawX(g, w, h, col){
+  const p = w * 0.32;
+  g.strokeStyle = col; g.lineWidth = 1.5; g.lineCap = "round";
+  g.beginPath();
+  g.moveTo(p, p); g.lineTo(w - p, h - p);
+  g.moveTo(w - p, p); g.lineTo(p, h - p);
+  g.stroke();
+}
+
+function drawChevron(g, w, h, col){
+  g.strokeStyle = col; g.lineWidth = 1.6; g.lineCap = "round"; g.lineJoin = "round";
+  g.beginPath();
+  g.moveTo(w * 0.15, h * 0.35); g.lineTo(w * 0.5, h * 0.7); g.lineTo(w * 0.85, h * 0.35);
+  g.stroke();
+}
+
+function drawCheckMark(g, x, y, size, col, amount){
+  /* Drawn as a growing stroke so the tick can sweep in when toggled. */
+  const pts = [[0.19, 0.53], [0.42, 0.75], [0.81, 0.28]];
+  g.strokeStyle = col;
+  g.lineWidth = Math.max(1.6, size * 0.15);
+  g.lineCap = "round"; g.lineJoin = "round";
+  const legs = [
+    [pts[0], pts[1]],
+    [pts[1], pts[2]]
+  ];
+  const total = 0.42;                       /* rough share of the first leg */
+  g.beginPath();
+  let a = clamp(amount, 0, 1);
+  const p = (t, seg) => [x + (seg[0][0] + (seg[1][0] - seg[0][0]) * t) * size,
+                         y + (seg[0][1] + (seg[1][1] - seg[0][1]) * t) * size];
+  g.moveTo(x + pts[0][0] * size, y + pts[0][1] * size);
+  const f1 = clamp(a / total, 0, 1);
+  let q = p(f1, legs[0]); g.lineTo(q[0], q[1]);
+  if (a > total){
+    const f2 = clamp((a - total) / (1 - total), 0, 1);
+    q = p(f2, legs[1]); g.lineTo(q[0], q[1]);
+  }
+  g.stroke();
+}
+
+function drawCopyIcon(g, w, h, col){
+  g.strokeStyle = col; g.lineWidth = 1.2;
+  rr(g, w * 0.08, h * 0.08, w * 0.6, h * 0.6, 2); g.stroke();
+  rr(g, w * 0.32, h * 0.32, w * 0.6, h * 0.6, 2);
+  g.fillStyle = c("bg"); g.fill(); g.stroke();
+}
+function drawTermIcon(g, w, h, col){
+  g.strokeStyle = col; g.lineWidth = 1.2; g.lineCap = "round"; g.lineJoin = "round";
+  rr(g, w * 0.06, h * 0.14, w * 0.88, h * 0.72, 2.5); g.stroke();
+  g.beginPath();
+  g.moveTo(w * 0.26, h * 0.36); g.lineTo(w * 0.44, h * 0.5); g.lineTo(w * 0.26, h * 0.64);
+  g.moveTo(w * 0.54, h * 0.66); g.lineTo(w * 0.76, h * 0.66);
+  g.stroke();
+}
+
+function destroy(s){
+  SURF.delete(s); LIVE.delete(s);
+  try { RO.unobserve(s.el); } catch (e) {}
+  s.el.__surf = null;
+}
+/* Rendered markdown is thrown away and rebuilt on every keystroke; without
+   this its checkbox surfaces would pile up in SURF for the whole session. */
+function dropSurfacesIn(root){
+  for (const s of [...SURF]) if (root.contains(s.el)) destroy(s);
+}
+
+/* ------------------------------ brand ------------------------------ */
+surface($("mark"), (g, w, h) => drawCairn(g, w, h, c("accent")));
+
+const bootS = surface($("bootMark"), (g, w, h, s) => {
+  /* The stones drift apart and settle while the vault loads. */
+  const t = (now() % 1600) / 1600;
+  drawCairn(g, w, h, c("accent"), Math.sin(t * Math.PI * 2) * 1.1);
+});
+animate(bootS, true);
+
+/* --------------------------- theme toggle --------------------------- */
+const themeS = surface($("themeBtn").firstElementChild, (g, w, h) => {
+  const cx = w / 2, cy = h / 2, r = 6.4;
+  const on = isDark();
+  g.fillStyle = c("dim");
+  if (theme === "auto"){
+    /* Half sun, half moon: the system decides which half is real. */
+    g.save();
+    g.beginPath(); g.arc(cx, cy, r, Math.PI / 2, Math.PI * 1.5); g.fill();
+    g.beginPath(); g.arc(cx, cy, r, -Math.PI / 2, Math.PI / 2); g.strokeStyle = c("dim");
+    g.lineWidth = 1.4; g.stroke();
+    g.restore();
+    g.strokeStyle = c("dim"); g.lineWidth = 1.3; g.lineCap = "round";
+    for (let i = 0; i < 4; i++){
+      const a = -Math.PI / 2 + i * Math.PI / 4 + Math.PI / 8;
+      g.beginPath();
+      g.moveTo(cx + Math.cos(a) * (r + 2), cy + Math.sin(a) * (r + 2));
+      g.lineTo(cx + Math.cos(a) * (r + 4), cy + Math.sin(a) * (r + 4));
+      g.stroke();
+    }
+  } else if (on){
+    g.beginPath();
+    g.arc(cx, cy, r, 0, Math.PI * 2);
+    g.arc(cx + r * 0.62, cy - r * 0.52, r * 0.92, 0, Math.PI * 2, true);
+    g.fill("evenodd");
+  } else {
+    g.beginPath(); g.arc(cx, cy, r * 0.62, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = c("dim"); g.lineWidth = 1.4; g.lineCap = "round";
+    for (let i = 0; i < 8; i++){
+      const a = i * Math.PI / 4;
+      g.beginPath();
+      g.moveTo(cx + Math.cos(a) * (r * 0.62 + 2), cy + Math.sin(a) * (r * 0.62 + 2));
+      g.lineTo(cx + Math.cos(a) * (r * 0.62 + 4.2), cy + Math.sin(a) * (r * 0.62 + 4.2));
+      g.stroke();
+    }
+  }
+});
+$("themeBtn").addEventListener("click", () => {
+  applyTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]);
+});
+
+/* ---------------------------- search field ---------------------------- */
+surface($("qIcon"), (g, w, h) => drawGlass(g, w, h, c("faint")));
+surface($("qClear").firstElementChild, (g, w, h) => drawX(g, w, h, c("dim")));
+
+/* --------------------------- status orb ---------------------------
+   One 15px canvas standing in for five states, so the words beside it can
+   stay short: a ring when idle, a filled dot while dirty, a sweeping arc
+   while saving, a tick after, a bar-and-dot on failure.                */
+let orbState = "idle", orbCheck = 0, orbCalm = false, orbTimer = 0;
+const orbS = surface($("orb"), (g, w, h, s) => {
+  const cx = w / 2, cy = h / 2, r = 5.6;
+  if (orbState === "saving"){
+    const a = now() / 1000 * 3.2;
+    g.strokeStyle = c("edge"); g.lineWidth = 2;
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = c("accent"); g.lineCap = "round";
+    g.beginPath(); g.arc(cx, cy, r, a, a + 1.9); g.stroke();
+    return;
+  }
+  if (orbState === "saved"){
+    g.fillStyle = c("ok");
+    g.beginPath(); g.arc(cx, cy, r + 1.4, 0, Math.PI * 2); g.fill();
+    drawCheckMark(g, cx - 5.2, cy - 5.2, 10.4, c("bg"), orbCheck);
+    return;
+  }
+  if (orbState === "error"){
+    g.fillStyle = c("bad");
+    g.beginPath(); g.arc(cx, cy, r + 1.4, 0, Math.PI * 2); g.fill();
+    g.fillStyle = c("bg");
+    rr(g, cx - 0.9, cy - 4.4, 1.8, 5.4, .9); g.fill();
+    g.beginPath(); g.arc(cx, cy + 3.2, 1.05, 0, Math.PI * 2); g.fill();
+    return;
+  }
+  if (orbState === "dirty"){
+    if (!orbCalm){
+      const p = 0.5 + 0.5 * Math.sin(now() / 460);
+      g.fillStyle = c("accent"); g.globalAlpha = 0.16 + 0.14 * p;
+      g.beginPath(); g.arc(cx, cy, r + 2.4, 0, Math.PI * 2); g.fill();
+      g.globalAlpha = 1;
+    }
+    g.fillStyle = c("accent");
+    g.beginPath(); g.arc(cx, cy, r - 1.4, 0, Math.PI * 2); g.fill();
+    return;
+  }
+  g.strokeStyle = c("edge"); g.lineWidth = 1.6;
+  g.beginPath(); g.arc(cx, cy, r - 0.6, 0, Math.PI * 2); g.stroke();
+});
+function setOrb(st){
+  if (st === orbState && st !== "saved") return;
+  orbState = st;
+  clearTimeout(orbTimer);
+  orbCalm = false;
+  animate(orbS, st === "saving" || st === "dirty");
+  /* The dirty state can last as long as you keep typing. Beat for a couple
+     of seconds to catch the eye, then settle — an editor has no business
+     holding a repaint loop open all afternoon.                          */
+  if (st === "dirty") orbTimer = setTimeout(() => {
+    orbCalm = true; animate(orbS, false); orbS.paint();
+  }, 2600);
+  if (st === "saved"){
+    orbCheck = 0;
+    tween(orbS, 340, t => { orbCheck = t; });
+  }
+  orbS.paint();
+}
+
+/* ---------------------------- unsaved pip ---------------------------- */
+function pip(el){
+  surface(el, (g, w, h) => {
+    g.fillStyle = c("accent");
+    g.beginPath(); g.arc(w / 2, h / 2, w / 2 - 0.6, 0, Math.PI * 2); g.fill();
+  });
+}
+
+/* ----------------------------- sync dial -----------------------------
+   The arc is the share of the interval between the last sync and the next
+   that has already elapsed, so a glance says how overdue a vault is.   */
+let dialFrac = 0, dialRunning = false, dialBad = false;
+const dialS = surface($("dial"), (g, w, h, s) => {
+  const cx = w / 2, cy = h / 2, r = w / 2 - 4.5;
+  g.lineWidth = 3; g.lineCap = "round";
+  g.strokeStyle = c("edge");
+  g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke();
+  const tone = dialBad ? c("bad") : c("accent");
+  if (dialRunning){
+    const a = now() / 1000 * 3;
+    g.strokeStyle = tone;
+    g.beginPath(); g.arc(cx, cy, r, a, a + 1.7); g.stroke();
+  } else if (dialFrac > 0){
+    g.strokeStyle = tone;
+    g.beginPath();
+    g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(dialFrac, 0.02, 1));
+    g.stroke();
+  }
+  g.fillStyle = dialBad ? c("bad") : c("dim");
+  g.beginPath(); g.arc(cx, cy, 2.2, 0, Math.PI * 2); g.fill();
+});
+
+/* ------------------------- segmented control -------------------------
+   A real control, not three buttons: one canvas, an animated pill, hover
+   and focus states, and arrow-key navigation.                          */
+const MODES = [["edit", "Edit"], ["split", "Split"], ["view", "Preview"]];
+let mode = "split";
+const segEl = $("seg");
+const segS = surface(segEl, (g, w, h, s) => {
+  const n = MODES.length, pad = 3, iw = (w - pad * 2) / n;
+  rr(g, 0.5, 0.5, w - 1, h - 1, 8);
+  g.fillStyle = c("bg"); g.fill();
+  g.strokeStyle = c("edge"); g.lineWidth = 1; g.stroke();
+
+  const pos = s.state.pos == null ? MODES.findIndex(m => m[0] === mode) : s.state.pos;
+  rr(g, pad + pos * iw, pad, iw, h - pad * 2, 6);
+  g.fillStyle = c("accent-soft"); g.fill();
+  g.strokeStyle = c("accent"); g.globalAlpha = .45; g.lineWidth = 1; g.stroke();
+  g.globalAlpha = 1;
+
+  g.textAlign = "center"; g.textBaseline = "middle";
+  MODES.forEach((m, i) => {
+    const near = 1 - clamp(Math.abs(pos - i), 0, 1);
+    const active = near > .5;
+    g.font = (active ? "600 " : "") + "12px ui-sans-serif,-apple-system,system-ui,sans-serif";
+    g.fillStyle = active ? c("accent") : (s.state.hover === i ? c("ink") : c("dim"));
+    g.fillText(m[1], pad + iw * (i + .5), h / 2 + .5);
+  });
+  if (s.state.focus){
+    rr(g, 1.5, 1.5, w - 3, h - 3, 7);
+    g.strokeStyle = c("accent"); g.lineWidth = 1.5; g.stroke();
+  }
+});
+function segIndexAt(x){
+  const pad = 3, iw = (segS.w - pad * 2) / MODES.length;
+  return clamp(Math.floor((x - pad) / iw), 0, MODES.length - 1);
+}
+function setMode(m, animated){
+  const to = MODES.findIndex(x => x[0] === m);
+  if (to < 0) return;
+  const from = segS.state.pos == null ? MODES.findIndex(x => x[0] === mode) : segS.state.pos;
+  mode = m;
+  document.body.dataset.mode = m;
+  try { localStorage.setItem("cairn-mode", m); } catch (e) {}
+  segEl.setAttribute("aria-label", "View mode: " + MODES[to][1]);
+  if (animated === false){ segS.state.pos = to; segS.paint(); }
+  else tween(segS, 200, t => { segS.state.pos = from + (to - from) * t; });
+  /* The panes only just changed size; the surfaces inside them need it. */
+  requestAnimationFrame(() => { mapS.paint(); gripS.paint(); });
+}
+segEl.addEventListener("pointermove", e => {
+  const i = segIndexAt(e.offsetX);
+  if (segS.state.hover !== i){ segS.state.hover = i; segS.paint(); }
+});
+segEl.addEventListener("pointerleave", () => { segS.state.hover = -1; segS.paint(); });
+segEl.addEventListener("pointerdown", e => setMode(MODES[segIndexAt(e.offsetX)][0]));
+segEl.addEventListener("focus", () => { segS.state.focus = true; segS.paint(); });
+segEl.addEventListener("blur", () => { segS.state.focus = false; segS.paint(); });
+segEl.addEventListener("keydown", e => {
+  const i = MODES.findIndex(m => m[0] === mode);
+  if (e.key === "ArrowRight" || e.key === "ArrowDown"){
+    e.preventDefault(); setMode(MODES[(i + 1) % MODES.length][0]);
+  } else if (e.key === "ArrowLeft" || e.key === "ArrowUp"){
+    e.preventDefault(); setMode(MODES[(i + MODES.length - 1) % MODES.length][0]);
+  }
+});
+
+/* --------------------------- pane splitter --------------------------- */
+const gripEl = $("grip");
+const gripS = surface(gripEl.firstElementChild, (g, w, h, s) => {
+  const n = 3, gap = 4, cy = h / 2;
+  g.fillStyle = s.state.hot ? c("accent") : c("edge");
+  for (let i = 0; i < n; i++){
+    g.beginPath();
+    g.arc(w / 2, cy + (i - (n - 1) / 2) * gap, 1.15, 0, Math.PI * 2);
+    g.fill();
+  }
+});
+function setSplit(pct){
+  pct = clamp(pct, 18, 82);
+  document.body.style.setProperty("--split", pct.toFixed(2) + "%");
+  try { localStorage.setItem("cairn-split", pct.toFixed(2)); } catch (e) {}
+  requestAnimationFrame(() => { mapS.paint(); gripS.paint(); });
+}
+gripEl.addEventListener("pointerenter", () => { gripS.state.hot = true; gripS.paint(); });
+gripEl.addEventListener("pointerleave", () => {
+  if (!gripEl.classList.contains("drag")){ gripS.state.hot = false; gripS.paint(); }
+});
+gripEl.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  gripEl.setPointerCapture(e.pointerId);
+  gripEl.classList.add("drag");
+  document.body.classList.add("resizing");
+  gripS.state.hot = true; gripS.paint();
+});
+gripEl.addEventListener("pointermove", e => {
+  if (!gripEl.classList.contains("drag")) return;
+  const r = $("panes").getBoundingClientRect();
+  setSplit((e.clientX - r.left) / r.width * 100);
+});
+function endGrip(){
+  if (!gripEl.classList.contains("drag")) return;
+  gripEl.classList.remove("drag");
+  document.body.classList.remove("resizing");
+  gripS.state.hot = false; gripS.paint();
+}
+gripEl.addEventListener("pointerup", endGrip);
+gripEl.addEventListener("pointercancel", endGrip);
+gripEl.addEventListener("dblclick", () => setSplit(50));
+gripEl.addEventListener("keydown", e => {
+  const cur = parseFloat(getComputedStyle(document.body).getPropertyValue("--split")) || 50;
+  if (e.key === "ArrowLeft"){ e.preventDefault(); setSplit(cur - 3); }
+  if (e.key === "ArrowRight"){ e.preventDefault(); setSplit(cur + 3); }
+});
+
+/* --------------------------- document map ---------------------------
+   A shape-of-the-note gutter beside the editor: one row per source line,
+   width from its length and colour from what it is. Click or drag it to
+   scroll. Cheap enough to repaint on every keystroke.                  */
+/* Only two things get a colour of their own — headings and code. Giving
+   every block type one turned the gutter into confetti at this size.    */
+const MAPKIND = {
+  h:    () => c("accent"),
+  code: () => c("note"),
+  list: () => c("dim"),
+  quote:() => c("dim"),
+  text: () => c("dim")
+};
+function mapRows(text){
+  const rows = [];
+  let fence = false;
+  for (const line of text.split("\n")){
+    if (/^```/.test(line)){ fence = !fence; rows.push(["code", 1]); continue; }
+    if (fence){ rows.push(["code", clamp(line.length / 60, .12, 1)]); continue; }
+    const t = line.trim();
+    if (!t){ rows.push([null, 0]); continue; }
+    let kind = "text";
+    if (/^#{1,6}\s/.test(t)) kind = "h";
+    else if (/^([-*+]|\d+\.)\s/.test(t)) kind = "list";
+    else if (/^>/.test(t)) kind = "quote";
+    const indent = clamp((line.length - line.trimStart().length) / 8, 0, .45);
+    rows.push([kind, clamp(t.length / 62, .1, 1), indent,
+               kind === "h" ? (t.match(/^#+/) || ["#"])[0].length : 0]);
+  }
+  return rows;
+}
+const edEl = $("ed");
+/* One formula for the row height, shared by the painter and the click
+   handler, so a click always lands on the line it looks like it hit. */
+const mapRowH = (rows, h) => clamp((h - 10) / Math.max(1, rows), 0.6, 6);
+const mapS = surface($("map"), (g, w, h, s) => {
+  const rows = mapRows(edEl.value);
+  /* A map of a note that already fits on screen is decoration, not a tool. */
+  const worth = rows.length * 23 > h + 40;
+  $("map").style.visibility = worth ? "visible" : "hidden";
+  if (!worth || !rows.length) return;
+  const padY = 5, usable = h - padY * 2;
+  const rowH = mapRowH(rows.length, h);
+  const bh = Math.max(0.9, rowH * 0.62);
+  const x0 = 4, maxW = w - 8;
+  rows.forEach((r, i) => {
+    if (!r[0]) return;
+    const y = padY + i * rowH;
+    if (y > h) return;
+    const ind = (r[2] || 0) * maxW;
+    let bw = (maxW - ind) * r[1];
+    g.fillStyle = MAPKIND[r[0]]();
+    g.globalAlpha = r[0] === "h" ? 1 : (r[0] === "code" ? .45 : .34);
+    if (r[0] === "h"){ bw = maxW * (1 - (r[3] - 1) * 0.13); }
+    rr(g, x0 + ind, y, Math.max(1.2, bw), bh, bh / 2);
+    g.fill();
+  });
+  g.globalAlpha = 1;
+  /* the window onto the note */
+  const sh = edEl.scrollHeight || 1;
+  const top = padY + (edEl.scrollTop / sh) * (rows.length * rowH);
+  const vh = Math.max(14, (edEl.clientHeight / sh) * (rows.length * rowH));
+  g.fillStyle = c("ink"); g.globalAlpha = .07;
+  rr(g, 1.5, top, w - 3, Math.min(vh, h - top), 4); g.fill();
+  g.globalAlpha = 1;
+  g.strokeStyle = c("accent"); g.globalAlpha = s.state.hot ? .75 : .4; g.lineWidth = 1;
+  rr(g, 2, top + .5, w - 4, Math.min(vh, h - top) - 1, 4); g.stroke();
+  g.globalAlpha = 1;
+});
+const mapEl = $("map");
+function mapScrollTo(y){
+  const rows = Math.max(1, edEl.value.split("\n").length);
+  const frac = clamp((y - 5) / (rows * mapRowH(rows, mapS.h)), 0, 1);
+  edEl.scrollTop = frac * edEl.scrollHeight - edEl.clientHeight / 2;
+}
+mapEl.addEventListener("pointerdown", e => {
+  mapEl.setPointerCapture(e.pointerId);
+  mapS.state.drag = true; mapS.state.hot = true;
+  mapScrollTo(e.offsetY);
+});
+mapEl.addEventListener("pointermove", e => {
+  if (mapS.state.drag) mapScrollTo(e.offsetY);
+});
+function endMap(e){
+  mapS.state.drag = false;
+  try { mapEl.releasePointerCapture(e.pointerId); } catch (err) {}
+  mapS.paint();
+}
+mapEl.addEventListener("pointerup", endMap);
+mapEl.addEventListener("pointercancel", endMap);
+mapEl.addEventListener("pointerenter", () => { mapS.state.hot = true; mapS.paint(); });
+mapEl.addEventListener("pointerleave", () => {
+  if (!mapS.state.drag){ mapS.state.hot = false; mapS.paint(); }
+});
+edEl.addEventListener("scroll", () => mapS.paint());
+
+/* --------------------------- task checkbox ---------------------------
+   Rendered markdown gets a real control instead of a disabled native box:
+   clicking one rewrites the [ ] in the source and marks the note dirty. */
+function taskBox(canvas, checked, toggle){
+  const s = surface(canvas, (g, w, h, st) => {
+    const k = st.k == null ? (checked ? 1 : 0) : st.k;
+    const box = 13, x = (w - box) / 2, y = (h - box) / 2;
+    rr(g, x + .5, y + .5, box - 1, box - 1, 4.5);
+    g.fillStyle = k > .5 ? c("accent") : c("bg");
+    g.globalAlpha = k > .5 ? clamp(k, .3, 1) : 1;
+    g.fill();
+    g.globalAlpha = 1;
+    g.strokeStyle = st.hot ? c("accent") : (k > .5 ? c("accent") : c("edge"));
+    g.lineWidth = st.hot ? 1.6 : 1.2;
+    g.stroke();
+    if (k > 0) drawCheckMark(g, x + 1.5, y + 1.5, box - 3, c("bg"), k);
+  });
+  s.state.k = checked ? 1 : 0;
+  canvas.tabIndex = 0;
+  canvas.setAttribute("role", "checkbox");
+  canvas.setAttribute("aria-checked", checked ? "true" : "false");
+  const hit = () => {
+    const to = s.state.k > .5 ? 0 : 1, from = s.state.k;
+    tween(s, 180, t => { s.state.k = from + (to - from) * t; });
+    canvas.setAttribute("aria-checked", to ? "true" : "false");
+    toggle(!!to);
+  };
+  canvas.addEventListener("pointerenter", () => { s.state.hot = true; s.paint(); });
+  canvas.addEventListener("pointerleave", () => { s.state.hot = false; s.paint(); });
+  canvas.addEventListener("click", hit);
+  canvas.addEventListener("keydown", e => {
+    if (e.key === " " || e.key === "Enter"){ e.preventDefault(); hit(); }
+  });
+  return s;
+}
+
+/* ---------------------------- dropdown ---------------------------- */
+function makeSelect(host, label){
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "head";
+  head.setAttribute("aria-haspopup", "listbox");
+  head.innerHTML = "<span></span>";
+  const chev = document.createElement("canvas");
+  head.appendChild(chev);
+  const pop = document.createElement("div");
+  pop.className = "pop";
+  pop.setAttribute("role", "listbox");
+  if (label) pop.setAttribute("aria-label", label);
+  host.append(head, pop);
+  surface(chev, (g, w, h) => drawChevron(g, w, h, c("dim")));
+
+  const api = {value: null, items: []};
+  let cur = 0;
+
+  function paint(){
+    head.firstElementChild.textContent = (api.items.find(i => i[0] === api.value) || ["", "—"])[1];
+    [...pop.children].forEach((b, i) => {
+      b.classList.toggle("sel", api.items[i][0] === api.value);
+      b.classList.toggle("cur", i === cur);
+    });
+  }
+  api.set = function(items, value){
+    api.items = items;
+    pop.innerHTML = "";
+    items.forEach((it, i) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "opt"; b.textContent = it[1];
+      b.setAttribute("role", "option");
+      b.addEventListener("click", () => { api.value = it[0]; close(); paint(); });
+      b.addEventListener("pointerenter", () => { cur = i; paint(); });
+      pop.appendChild(b);
+    });
+    api.value = items.some(i => i[0] === value) ? value : (items[0] || [null])[0];
+    cur = Math.max(0, items.findIndex(i => i[0] === api.value));
+    paint();
+  };
+  function open(){
+    host.classList.add("open");
+    head.setAttribute("aria-expanded", "true");
+    const sel = pop.children[cur];
+    if (sel) sel.scrollIntoView({block: "nearest"});
+  }
+  function close(){
+    host.classList.remove("open");
+    head.setAttribute("aria-expanded", "false");
+  }
+  api.close = close;
+  api.isOpen = () => host.classList.contains("open");
+  head.addEventListener("click", () => host.classList.contains("open") ? close() : open());
+  head.addEventListener("keydown", e => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp"){
+      e.preventDefault();
+      if (!api.isOpen()) return open();
+      cur = clamp(cur + (e.key === "ArrowDown" ? 1 : -1), 0, api.items.length - 1);
+      paint();
+      pop.children[cur].scrollIntoView({block: "nearest"});
+    } else if (e.key === "Enter" || e.key === " "){
+      if (api.isOpen()){ e.preventDefault(); api.value = api.items[cur][0]; close(); paint(); }
+    } else if (e.key === "Escape" && api.isOpen()){
+      e.stopPropagation(); close();
+    }
+  });
+  document.addEventListener("pointerdown", e => {
+    if (api.isOpen() && !host.contains(e.target)) close();
+  });
+  return api;
+}
 
 /* ============================ markdown ============================ */
 /* Deliberately small: it covers the syntax this vault actually uses.  */
@@ -246,9 +1066,9 @@ function esc(s){
 
 function inline(s, ctx){
   const code = [];
-  s = s.replace(/`([^`]+)`/g, (m, c) => {
-    code.push("<code>" + esc(c) + "</code>");
-    return " C" + (code.length - 1) + " ";
+  s = s.replace(/`([^`]+)`/g, (m, cd) => {
+    code.push("<code>" + esc(cd) + "</code>");
+    return " C" + (code.length - 1) + " ";
   });
   s = esc(s);
   // image embeds
@@ -277,7 +1097,7 @@ function inline(s, ctx){
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, "$1<em>$2</em>");
   s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
-  return s.replace(/ C(\d+) /g, (m, i) => code[+i]);
+  return s.replace(/ C(\d+) /g, (m, i) => code[+i]);
 }
 
 function splitFm(text){
@@ -293,10 +1113,11 @@ function splitFm(text){
 const SHELLISH = ["", "sh", "bash", "zsh", "shell", "console", "terminal", "shell-session"];
 
 function codeTools(lang){
-  let html = '<div class="cbtools"><button type="button" data-cb="copy">copy</button>';
+  let html = '<div class="cbtools"><button type="button" data-cb="copy">'
+           + '<canvas data-icon="copy"></canvas>copy</button>';
   if (TERMINAL_OK && SHELLISH.includes((lang || "").toLowerCase()))
     html += '<button type="button" data-cb="term" title="Open a terminal with this '
-          + 'typed at the prompt. It is not run.">terminal</button>';
+          + 'typed at the prompt. It is not run."><canvas data-icon="term"></canvas>terminal</button>';
   return html + "</div>";
 }
 
@@ -357,12 +1178,12 @@ function render(text, ctx){
     // table
     if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])){
       flush();
-      const cells = r => r.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      const cells = r => r.trim().replace(/^\||\|$/g, "").split("|").map(x => x.trim());
       const head = cells(line);
       i += 2;
-      let t = "<table><thead><tr>" + head.map(c => "<th>" + inline(c, ctx) + "</th>").join("") + "</tr></thead><tbody>";
+      let t = "<table><thead><tr>" + head.map(x => "<th>" + inline(x, ctx) + "</th>").join("") + "</tr></thead><tbody>";
       while (i < lines.length && /^\s*\|/.test(lines[i])){
-        t += "<tr>" + cells(lines[i++]).map(c => "<td>" + inline(c, ctx) + "</td>").join("") + "</tr>";
+        t += "<tr>" + cells(lines[i++]).map(x => "<td>" + inline(x, ctx) + "</td>").join("") + "</tr>";
       }
       out += t + "</tbody></table>";
       continue;
@@ -390,9 +1211,13 @@ function render(text, ctx){
         let item = lines[i++].replace(/^\s*([-*+]|\d+\.)\s+/, "");
         const task = item.match(/^\[([ xX])\]\s+(.*)$/);
         if (task){
-          l += '<li class="task"><input type="checkbox" disabled'
-             + (task[1].toLowerCase() === "x" ? " checked" : "") + ">"
-             + inline(task[2], ctx) + "</li>";
+          const done = task[1].toLowerCase() === "x";
+          /* The index ties this box back to its line in the source, so a
+             click can rewrite the markdown rather than just the picture. */
+          l += '<li class="task' + (done ? " done" : "") + '">'
+             + '<canvas data-task="' + (ctx.tasks++) + '" data-on="' + (done ? 1 : 0) + '"'
+             + ' aria-label="' + esc(task[2].replace(/[*`~\[\]]/g, "").slice(0, 60)) + '"></canvas>'
+             + "<span>" + inline(task[2], ctx) + "</span></li>";
         } else {
           l += "<li>" + inline(item, ctx) + "</li>";
         }
@@ -417,8 +1242,7 @@ function render(text, ctx){
 let NOTES = [], IMAGES = {}, TARGETS = {}, TERMINAL_OK = false;
 let current = null, dirty = false, saving = false;
 
-const $ = id => document.getElementById(id);
-const listEl = $("list"), edEl = $("ed"), viewEl = $("view");
+const listEl = $("list"), viewEl = $("view");
 const statusEl = $("status"), crumbEl = $("crumb"), saveBtn = $("saveBtn"), qEl = $("q");
 
 function api(path, opts){
@@ -440,11 +1264,13 @@ function buildTargets(){
     if (!(n.title in TARGETS)) TARGETS[n.title] = n.path;
   }
 }
-const ctx = () => ({images: IMAGES, targets: TARGETS});
+const ctx = () => ({images: IMAGES, targets: TARGETS, tasks: 0});
 
+const ORB_FOR = {dirty: "dirty", saved: "saved", error: "error"};
 function setStatus(text, cls){
-  statusEl.textContent = text;
+  statusEl.textContent = text || "";
   statusEl.className = cls || "";
+  setOrb(ORB_FOR[cls] || (dirty ? "dirty" : "idle"));
 }
 
 function setDirty(v){
@@ -454,10 +1280,25 @@ function setDirty(v){
   drawList(qEl.value);
 }
 
+/* ------------------------------ list ------------------------------ */
+function label(text, needle){
+  const span = document.createElement("span");
+  span.className = "nm";
+  const at = needle ? text.toLowerCase().indexOf(needle) : -1;
+  if (at < 0){ span.textContent = text; return span; }
+  span.append(text.slice(0, at));
+  const m = document.createElement("mark");
+  m.textContent = text.slice(at, at + needle.length);
+  span.append(m, text.slice(at + needle.length));
+  return span;
+}
+
 function drawList(filter){
   const f = (filter || "").trim().toLowerCase();
+  $("qField").classList.toggle("has-q", !!f);
   const shown = f ? NOTES.filter(n =>
     (n.title + " " + n.path + " " + n.tags.join(" ") + " " + n.raw).toLowerCase().includes(f)) : NOTES;
+  dropSurfacesIn(listEl);
   listEl.innerHTML = "";
   let folder = null;
   for (const n of shown){
@@ -465,30 +1306,88 @@ function drawList(filter){
       folder = n.folder;
       const g = document.createElement("div");
       g.className = "grp";
-      g.textContent = folder === "(root)" ? "Vault root" : folder;
+      g.append(folder === "(root)" ? "Vault root" : folder);
       listEl.appendChild(g);
     }
     const b = document.createElement("button");
     b.className = "item" + (current && n.path === current.path ? " on" : "");
     b.dataset.open = n.path;
-    b.textContent = n.title;
+    b.title = n.path;
+    b.appendChild(label(n.title, f));
     if (dirty && current && n.path === current.path){
-      const d = document.createElement("span");
-      d.className = "dot"; d.textContent = " ●";
-      b.appendChild(d);
+      const cv = document.createElement("canvas");
+      cv.className = "pip";
+      b.appendChild(cv);
+      pip(cv);
     }
     listEl.appendChild(b);
   }
-  $("tally").textContent = f ? shown.length + "/" + NOTES.length : NOTES.length + " notes";
+  $("tally").textContent = f ? shown.length + " of " + NOTES.length + " match"
+                             : NOTES.length + (NOTES.length === 1 ? " note" : " notes");
   if (f && !shown.length){
-    const g = document.createElement("div");
-    g.className = "grp"; g.textContent = "no matches";
-    listEl.appendChild(g);
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.textContent = "Nothing matches “" + filter.trim() + "”.";
+    listEl.appendChild(e);
+  }
+}
+
+/* ----------------------------- preview ----------------------------- */
+function hydrate(){
+  for (const cv of viewEl.querySelectorAll("canvas[data-icon]")){
+    const kind = cv.dataset.icon;
+    surface(cv, (g, w, h) => {
+      const col = cv.closest("button").classList.contains("done") ? c("ok") : c("dim");
+      (kind === "copy" ? drawCopyIcon : drawTermIcon)(g, w, h, col);
+    });
+  }
+  for (const cv of viewEl.querySelectorAll("canvas[data-task]")){
+    const n = +cv.dataset.task;
+    taskBox(cv, cv.dataset.on === "1", on => toggleTask(n, on, cv));
   }
 }
 
 function preview(){
+  dropSurfacesIn(viewEl);
   viewEl.innerHTML = render(edEl.value, ctx());
+  hydrate();
+}
+
+/* Flip the nth `- [ ]` in the source. Fenced code and the frontmatter are
+   skipped so the count lines up with what the renderer made a box for.  */
+function toggleTask(n, on, cv){
+  const [fm, body] = splitFm(edEl.value);
+  const head = fm === null ? "" : "---\n" + fm + "\n---\n";
+  const lines = body.split("\n");
+  let fence = false, seen = 0, hit = -1;
+  for (let i = 0; i < lines.length; i++){
+    if (/^```/.test(lines[i])){ fence = !fence; continue; }
+    if (fence) continue;
+    if (/^\s*([-*+]|\d+\.)\s+\[[ xX]\]\s/.test(lines[i])){
+      if (seen === n){ hit = i; break; }
+      seen++;
+    }
+  }
+  if (hit < 0) return;
+  lines[hit] = lines[hit].replace(/\[[ xX]\]/, on ? "[x]" : "[ ]");
+  const at = edEl.selectionStart, to = edEl.selectionEnd;
+  edEl.value = head + lines.join("\n");
+  try { edEl.setSelectionRange(at, to); } catch (e) {}
+  const li = cv.closest("li");
+  if (li) li.classList.toggle("done", on);
+  if (!dirty) setDirty(true);
+  mapS.paint();
+  drawStats();
+}
+
+/* ------------------------------ stats ------------------------------ */
+function drawStats(){
+  const body = splitFm(edEl.value)[1];
+  const words = (body.match(/[\w'’-]+/g) || []).length;
+  const mins = Math.max(1, Math.round(words / 220));
+  $("stats").textContent = current
+    ? words.toLocaleString() + " words · " + body.split("\n").length + " lines · " + mins + " min read"
+    : "";
 }
 
 function open_(path){
@@ -497,11 +1396,21 @@ function open_(path){
   if (!n) return;
   current = n;
   edEl.value = n.raw;
-  crumbEl.textContent = n.path;
+  crumbEl.innerHTML = "";
+  const parts = n.path.split("/");
+  parts.forEach((p, i) => {
+    const s = document.createElement("span");
+    if (i < parts.length - 1){ s.className = "dir"; s.textContent = p + " / "; }
+    else s.textContent = p;
+    crumbEl.appendChild(s);
+  });
+  edEl.scrollTop = 0;
   preview();
   setDirty(false);
   setStatus("", "");
-  document.title = n.title + " — Notes";
+  drawStats();
+  mapS.paint();
+  document.title = n.title + " — cairn";
   $("trashBtn").disabled = false;
   drawList(qEl.value);
 }
@@ -510,6 +1419,7 @@ async function save(){
   if (!current || !dirty || saving) return;
   saving = true; saveBtn.disabled = true;
   setStatus("saving…", "");
+  setOrb("saving");
   try{
     const r = await api("/api/note", {
       method: "PUT",
@@ -529,6 +1439,8 @@ async function save(){
     setDirty(false);
     setStatus("saved" + (r.backup ? " · previous kept in .backups/" : ""), "saved");
     preview();
+    drawStats();
+    mapS.paint();
     setTimeout(() => { if (!dirty) setStatus("", ""); }, 4000);
   } catch (e){
     saving = false;
@@ -543,26 +1455,24 @@ async function save(){
 }
 
 /* ---------------------------- dialog ---------------------------- */
-let dlgMode = "new";
+const folderSel = makeSelect($("dlgFolder"), "Folder");
 function openDialog(){
-  dlgMode = "new";
   const folders = [...new Set(NOTES.map(n => n.folder))].sort();
-  $("dlgFolder").innerHTML = folders
-    .map(f => '<option value="' + esc(f) + '">' + esc(f === "(root)" ? "Vault root" : f) + "</option>")
-    .join("");
-  if (current) $("dlgFolder").value = current.folder;
+  folderSel.set(folders.map(f => [f, f === "(root)" ? "Vault root" : f]),
+                current ? current.folder : null);
   $("dlgName").value = "";
   $("dlgErr").textContent = "";
   $("veil").classList.add("open");
   $("dlgName").focus();
 }
-function closeDialog(){ $("veil").classList.remove("open"); }
+function closeDialog(){ folderSel.close(); $("veil").classList.remove("open"); }
+const dlgOpen = () => $("veil").classList.contains("open");
 
 async function createNote(){
   const title = $("dlgName").value.trim();
   if (!title){ $("dlgErr").textContent = "Give it a title."; return; }
   if (/[\/\\:*?"<>|]/.test(title)){ $("dlgErr").textContent = "Avoid / \\ : * ? \" < > | in the title."; return; }
-  const folder = $("dlgFolder").value;
+  const folder = folderSel.value;
   const path = (folder === "(root)" ? "" : folder + "/") + title + ".md";
   try{
     const r = await api("/api/new", {method: "POST", body: JSON.stringify({path, title})});
@@ -582,19 +1492,20 @@ async function trashNote(){
              + "you can pull it back out of that folder.")) return;
   try{
     const r = await api("/api/trash", {method: "POST", body: JSON.stringify({path: current.path})});
-    const gone = current.path;
     current = null; dirty = false;
-    edEl.value = ""; viewEl.innerHTML = ""; crumbEl.textContent = "";
+    edEl.value = ""; dropSurfacesIn(viewEl); viewEl.innerHTML = "";
+    crumbEl.textContent = ""; $("stats").textContent = "";
     await reload();
     setStatus("moved to " + r.trashed, "saved");
     $("trashBtn").disabled = true;
+    mapS.paint();
     if (NOTES.length) open_(NOTES[0].path);
   } catch (e){ setStatus(e.message, "error"); }
 }
 
 /* ----------------------------- sync ----------------------------- */
-/* The button is hidden unless the server was started with --sync-cmd, so a
-   plain cairn looks exactly as it did before.                              */
+/* The row is hidden unless the server was started with --sync-cmd, so a
+   plain cairn looks exactly as it did before.                          */
 
 const syncEl = $("sync"), syncBtn = $("syncBtn"), syncInfo = $("syncInfo");
 let SYNC = null;
@@ -613,14 +1524,13 @@ function rel(t){
 
 function drawSync(){
   const s = SYNC;
-  /* An attribute rather than a class: the Edit/Split/Preview buttons assign
-     body.className outright, which would silently drop a class set here. */
+  /* An attribute rather than a class: the mode switch owns body's classes. */
   if (s && s.enabled) document.body.dataset.sync = "on";
   else delete document.body.dataset.sync;
-  if (!s || !s.enabled){ syncEl.hidden = true; return; }
+  if (!s || !s.enabled){ syncEl.hidden = true; animate(dialS, false); return; }
   syncEl.hidden = false;
   syncBtn.disabled = !!s.running;
-  syncBtn.textContent = s.running ? "Syncing…" : "Sync now";
+  syncBtn.textContent = s.running ? "…" : "Sync";
 
   /* A run started by the timer never passes through cairn, so its time comes
      from systemd and the button's own runs come from the state file. Whichever
@@ -630,11 +1540,20 @@ function drawSync(){
   const failed = s.last && !s.last.ok && mine && mine >= (theirs || 0);
 
   const bits = [];
-  if (last) bits.push("Last sync <b>" + esc(rel(last)) + "</b>" +
+  if (last) bits.push("Last <b>" + esc(rel(last)) + "</b>" +
                       (failed ? ' <span class="bad">— failed</span>' : ""));
   else      bits.push("No sync yet");
   if (s.next) bits.push("Next <b>" + esc(rel(s.next)) + "</b>");
   syncInfo.innerHTML = bits.join("<br>");
+
+  /* How far through the wait we are, for the dial's arc. */
+  dialBad = !!failed;
+  dialRunning = !!s.running;
+  const t = Date.now() / 1000;
+  dialFrac = (last && s.next && s.next > last) ? clamp((t - last) / (s.next - last), 0, 1)
+                                               : (last ? 1 : 0);
+  animate(dialS, dialRunning);
+  dialS.paint();
 }
 
 async function refreshSync(){
@@ -654,7 +1573,8 @@ async function doSync(){
     return;
   }
   syncBtn.disabled = true;
-  syncBtn.textContent = "Syncing…";
+  syncBtn.textContent = "…";
+  dialRunning = true; animate(dialS, true);
   setStatus("syncing…");
   try {
     const record = (await api("/api/sync", {method: "POST"})).sync;
@@ -680,6 +1600,7 @@ async function doSync(){
   } catch (e){
     setStatus(e.message, "error");
   }
+  dialRunning = false;
   await refreshSync();
 }
 
@@ -704,10 +1625,17 @@ function codeText(btn){
 }
 
 function flash(btn, label, cls){
-  const was = btn.textContent;
-  btn.textContent = label;
+  const lab = btn.lastChild;
+  const was = lab.textContent;
+  lab.textContent = label;
   btn.classList.add(cls);
-  setTimeout(() => { btn.textContent = was; btn.classList.remove(cls); }, 1600);
+  const ic = btn.querySelector("canvas");
+  if (ic && ic.__surf) ic.__surf.paint();
+  setTimeout(() => {
+    lab.textContent = was;
+    btn.classList.remove(cls);
+    if (ic && ic.__surf) ic.__surf.paint();
+  }, 1600);
 }
 
 async function copyText(text){
@@ -751,9 +1679,19 @@ async function codeAction(btn){
   }
 }
 
+/* ---------------------------- wiring ---------------------------- */
 listEl.addEventListener("click", e => {
   const b = e.target.closest("[data-open]");
   if (b) open_(b.dataset.open);
+});
+listEl.addEventListener("keydown", e => {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  const items = [...listEl.querySelectorAll(".item")];
+  const at = items.indexOf(document.activeElement);
+  if (at < 0) return;
+  e.preventDefault();
+  const next = items[clamp(at + (e.key === "ArrowDown" ? 1 : -1), 0, items.length - 1)];
+  if (next) next.focus();
 });
 viewEl.addEventListener("click", e => {
   const a = e.target.closest("a.wl[data-open]");
@@ -762,7 +1700,12 @@ viewEl.addEventListener("click", e => {
   if (b) codeAction(b);
 });
 
-edEl.addEventListener("input", () => { if (!dirty) setDirty(true); preview(); });
+edEl.addEventListener("input", () => {
+  if (!dirty) setDirty(true);
+  preview();
+  drawStats();
+  mapS.paint();
+});
 edEl.addEventListener("keydown", e => {
   if (e.key === "Tab"){
     e.preventDefault();
@@ -771,9 +1714,21 @@ edEl.addEventListener("keydown", e => {
     edEl.setSelectionRange(s + 2, s + 2);
     if (!dirty) setDirty(true);
     preview();
+    mapS.paint();
   }
 });
 qEl.addEventListener("input", () => drawList(qEl.value));
+qEl.addEventListener("keydown", e => {
+  if (e.key === "ArrowDown" || e.key === "Enter"){
+    const first = listEl.querySelector(".item");
+    if (first){
+      e.preventDefault();
+      if (e.key === "Enter") open_(first.dataset.open);
+      else first.focus();
+    }
+  }
+});
+$("qClear").addEventListener("click", () => { qEl.value = ""; drawList(""); qEl.focus(); });
 saveBtn.addEventListener("click", save);
 syncBtn.addEventListener("click", doSync);
 /* Re-render often enough that "in 25 minutes" stays honest, but only ask the
@@ -787,24 +1742,20 @@ $("dlgOk").addEventListener("click", createNote);
 $("dlgName").addEventListener("keydown", e => { if (e.key === "Enter") createNote(); });
 $("veil").addEventListener("click", e => { if (e.target === $("veil")) closeDialog(); });
 
-document.querySelectorAll(".seg button").forEach(b => {
-  b.addEventListener("click", () => {
-    document.querySelectorAll(".seg button").forEach(x => x.classList.remove("on"));
-    b.classList.add("on");
-    document.body.className = "mode-" + b.dataset.mode;
-    try { localStorage.setItem("notes-mode", b.dataset.mode); } catch (e) {}
-  });
-});
-
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key === "s"){ e.preventDefault(); save(); }
   if ((e.ctrlKey || e.metaKey) && e.key === "n"){ e.preventDefault(); openDialog(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === "\\"){
+    e.preventDefault();
+    const i = MODES.findIndex(m => m[0] === mode);
+    setMode(MODES[(i + 1) % MODES.length][0]);
+  }
   if (e.key === "Escape"){
-    if ($("veil").classList.contains("open")) closeDialog();
+    if (dlgOpen()) closeDialog();
     else if (document.activeElement === qEl){ qEl.value = ""; drawList(""); qEl.blur(); }
   }
   if (e.key === "/" && document.activeElement !== qEl && document.activeElement !== edEl
-      && !$("veil").classList.contains("open")){
+      && !dlgOpen() && document.activeElement !== $("dlgName")){
     e.preventDefault(); qEl.focus(); qEl.select();
   }
 });
@@ -814,23 +1765,34 @@ window.addEventListener("beforeunload", e => {
 });
 
 (async function(){
+  readPalette();
+  let saved = null, split = null, m = null;
+  try {
+    saved = localStorage.getItem("cairn-theme");
+    split = localStorage.getItem("cairn-split");
+    m = localStorage.getItem("cairn-mode") || localStorage.getItem("notes-mode");
+  } catch (e) {}
+  applyTheme(saved || "auto");
+  if (split) setSplit(parseFloat(split)); else setSplit(50);
+  setMode(m && MODES.some(x => x[0] === m) ? m : "split", false);
+  redrawAll();
+
   try{
-    let mode = null;
-    try { mode = localStorage.getItem("notes-mode"); } catch (e) {}
-    if (mode){
-      document.body.className = "mode-" + mode;
-      document.querySelectorAll(".seg button").forEach(x =>
-        x.classList.toggle("on", x.dataset.mode === mode));
-    }
     await reload();
+    animate(bootS, false);
+    destroy(bootS);
     $("boot").remove();
     const readme = NOTES.find(n => n.path === "README.md") || NOTES[0];
     if (readme) open_(readme.path);
+    else setStatus("this vault has no notes yet — make one", "");
+    redrawAll();
     /* After the notes are up: the sidebar is usable without it, and it is the
        one call that can spawn a subprocess on the server.                   */
     refreshSync();
   } catch (e){
-    $("boot").textContent = "Could not reach the notes server: " + e.message;
+    $("boot").classList.add("fail");
+    $("bootMsg").textContent = "Could not reach the notes server: " + e.message;
+    animate(bootS, false);
   }
 })();
 </script>
