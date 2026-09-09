@@ -26,11 +26,17 @@ body{margin:0;background:var(--bg);color:var(--ink);
   -webkit-font-smoothing:antialiased;overflow:hidden}
 button{font:inherit;color:inherit}
 
-#app{display:flex;height:100vh}
+/* Three columns over one footer. The columns scroll; the page never does. */
+#app{display:flex;flex-direction:column;height:100vh}
+#shell{flex:1;display:flex;min-height:0}
 
-/* ---------- sidebar ---------- */
+/* ---------- side panels ---------- */
 #side{width:290px;flex:0 0 290px;background:var(--panel);border-right:1px solid var(--edge);
   display:flex;flex-direction:column;overflow:hidden}
+/* Attributes rather than classes: the Edit/Split/Preview buttons assign
+   body.className outright, which would silently drop a class set here. */
+body[data-left="off"] #side{display:none}
+body[data-right="off"] #outline{display:none}
 #brand{padding:14px 16px 10px;border-bottom:1px solid var(--edge);
   display:flex;align-items:baseline;gap:8px}
 #brand h1{margin:0;font-size:13px;letter-spacing:.07em;text-transform:uppercase;
@@ -48,21 +54,24 @@ button{font:inherit;color:inherit}
 .btn:disabled{opacity:.45;cursor:default}
 .btn.danger:hover{border-color:var(--bad);color:var(--bad)}
 #list{flex:1;overflow-y:auto;padding:6px 0 30px}
-#sync{padding:10px 14px;border-top:1px solid var(--edge);
-  display:flex;flex-direction:column;gap:6px}
-#sync[hidden]{display:none}
-#syncInfo{font-size:11px;color:var(--dim);line-height:1.6}
-#syncInfo b{font-weight:600;color:var(--ink)}
-#syncInfo .bad{color:var(--bad);font-weight:600}
 .grp{padding:13px 16px 4px;font-size:10.5px;font-weight:700;letter-spacing:.06em;
   text-transform:uppercase;color:var(--dim)}
-.item{display:block;width:100%;text-align:left;padding:6px 16px;font-size:13.5px;
-  line-height:1.4;background:none;border:0;cursor:pointer;border-left:3px solid transparent}
-.item:hover{background:var(--sel)}
-.item.on{background:var(--accent-soft);border-left-color:var(--accent);font-weight:600}
-.item .dot{color:var(--accent);font-weight:700}
-.item .sub{display:block;font-size:11px;color:var(--dim);font-weight:400;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* One row shape for both halves of the tree: the twisty column keeps folder
+   names and note titles on the same left edge at a given depth. */
+.row{display:flex;align-items:center;gap:5px;width:100%;text-align:left;
+  padding:4px 12px 4px 0;font-size:13.5px;line-height:1.35;background:none;
+  border:0;border-left:3px solid transparent;cursor:pointer}
+.row:hover{background:var(--sel)}
+.row .tw{flex:0 0 12px;font-size:8px;color:var(--dim);text-align:center;
+  transition:transform .12s}
+.row .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .ct{font-size:10.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+.row .mk{color:var(--accent);font-weight:700}
+.row.dir{font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--dim)}
+.row.dir:hover{color:var(--ink)}
+.row.shut .tw{transform:rotate(-90deg)}
+.row.on{background:var(--accent-soft);border-left-color:var(--accent);font-weight:600}
 
 /* ---------- main ---------- */
 #main{flex:1;display:flex;flex-direction:column;min-width:0}
@@ -78,6 +87,82 @@ button{font:inherit;color:inherit}
 .seg button{padding:5px 11px;font-size:12px;background:var(--bg);border:0;cursor:pointer}
 .seg button+button{border-left:1px solid var(--edge)}
 .seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+
+.tog{padding:5px 9px;font-size:11.5px;color:var(--dim);background:var(--bg);
+  border:1px solid var(--edge);border-radius:7px;cursor:pointer;white-space:nowrap}
+.tog:hover{border-color:var(--accent);color:var(--accent)}
+.tog.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+/* Something cairn is running, whether or not the panel is open to show it. */
+.tog.busy{border-color:var(--accent);color:var(--accent)}
+.tog.busy::before{content:"";display:inline-block;width:6px;height:6px;margin-right:6px;
+  border-radius:50%;background:var(--accent);animation:pulse 1.1s ease-in-out infinite}
+
+/* ---------- outline ---------- */
+#outline{width:250px;flex:0 0 250px;background:var(--panel);border-left:1px solid var(--edge);
+  display:flex;flex-direction:column;overflow:hidden}
+.phead{padding:14px 16px 10px;border-bottom:1px solid var(--edge);display:flex;
+  align-items:baseline;gap:8px;font-size:13px;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--dim);font-weight:700}
+.phead span{font-size:11px;font-weight:400;letter-spacing:0;text-transform:none;margin-left:auto}
+#outBody{flex:1;overflow-y:auto;padding:8px 0 30px}
+#outBody .none{padding:10px 16px;font-size:12px;color:var(--dim)}
+.o{display:flex;gap:6px;align-items:baseline;width:100%;text-align:left;
+  padding:3px 12px 3px 13px;font-size:12.5px;line-height:1.45;color:var(--ink);
+  background:none;border:0;border-left:3px solid transparent;cursor:pointer;
+  text-decoration:none}
+.o:hover{background:var(--sel)}
+.o .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.o.here{background:var(--accent-soft);border-left-color:var(--accent);color:var(--accent)}
+.o.h1{font-weight:700}
+.o.h2{padding-left:25px}
+.o.h3{padding-left:37px;color:var(--dim)}
+.o.h4,.o.h5,.o.h6{padding-left:49px;color:var(--dim)}
+.o.code .nm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  color:var(--dim)}
+.o .host{flex:0 0 auto;max-width:45%;font-size:10.5px;color:var(--dim);
+  overflow:hidden;text-overflow:ellipsis}
+.o .tag{flex:0 0 auto;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;
+  font-weight:700;color:var(--accent);background:var(--accent-soft);
+  border-radius:4px;padding:1px 5px}
+.o.dead{cursor:help}
+.o.dead .nm{color:var(--dim);text-decoration:line-through}
+.o.link .nm{color:var(--accent)}
+.osec{padding:16px 16px 5px;font-size:10.5px;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--dim);border-top:1px solid var(--edge);margin-top:10px}
+
+/* ---------- footer ---------- */
+#foot{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--edge);
+  display:flex;flex-direction:column}
+#console{display:none;height:min(230px,32vh);overflow-y:auto;background:var(--bg);
+  border-bottom:1px solid var(--edge);padding:9px 14px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.6}
+body[data-console="on"] #console{display:block}
+#console .idle{color:var(--dim)}
+.ln{display:flex;gap:9px;white-space:pre-wrap;word-break:break-word}
+.ln .t{flex:0 0 auto;color:var(--dim);font-variant-numeric:tabular-nums}
+.ln .m{flex:1;min-width:0}
+.ln.start .m,.ln.end .m{font-weight:700}
+.ln.start .m{color:var(--accent)}
+.ln.end .m{color:var(--ok)}
+.ln.err .m{color:var(--bad)}
+.ln.term .m{color:var(--note)}
+#footbar{display:flex;align-items:center;gap:16px;padding:5px 14px;min-height:32px;
+  font-size:11.5px;color:var(--dim)}
+.chip{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.chip b{color:var(--ink);font-weight:600}
+.chip .bad{color:var(--bad);font-weight:600}
+.chip .sep{opacity:.5;padding:0 1px}
+.dot{flex:0 0 7px;width:7px;height:7px;border-radius:50%;background:var(--dim);opacity:.55}
+.dot.ok{background:var(--ok);opacity:1}
+.dot.warn{background:var(--warn);opacity:1}
+.dot.bad{background:var(--bad);opacity:1}
+.dot.run{background:var(--accent);opacity:1;animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.dot.run{animation:none}}
+#footgap{flex:1;min-width:8px}
+#footbar .btn{padding:4px 9px;font-size:11.5px}
+#footbar .btn[hidden]{display:none}
 
 #panes{flex:1;display:flex;min-height:0}
 #editWrap,#viewWrap{flex:1;min-width:0;overflow:auto}
@@ -161,21 +246,30 @@ body.mode-edit #editWrap{border-right:0}
 #dlgBtns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
 #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
   background:var(--bg);color:var(--dim);font-size:14px;z-index:80}
+/* Anywhere the outline can jump to. The margin keeps a heading off the very
+   top edge of the pane it just scrolled into. */
+#view [id^="L"]{scroll-margin-top:14px}
+
 @media (max-width:900px){
-  #app{flex-direction:column}
-  #side{width:100%;flex:0 0 auto;max-height:40vh;border-right:0;border-bottom:1px solid var(--edge)}
+  /* Too narrow for three columns: a panel that is on covers the note instead
+     of squeezing it, and only one of them can be on at a time (see openPanel).
+     Both start off, so a phone opens on the note itself. */
+  #shell{position:relative}
+  #side,#outline{position:absolute;top:0;bottom:0;z-index:20;width:min(320px,84vw);
+    flex:0 0 auto;box-shadow:0 0 40px rgba(0,0,0,.28)}
+  #side{left:0}
+  #outline{right:0}
   body.mode-split #editWrap{display:none}
-  /* Stacked, the sidebar only gets 40vh, and a two-line sync block was tall
-     enough to push its own second line out through #side's overflow:hidden —
-     the next-sync time was rendered but invisible. Side by side it fits, and
-     the note list keeps the room it just gave up. */
-  #sync{flex-direction:row;align-items:center;gap:10px;padding:8px 14px}
-  #sync button{flex:0 0 auto}
-  #syncInfo{line-height:1.4}
-  /* Give the note list back the height the sync row costs it, but only where
-     there is a sync row — a cairn started without --sync-cmd keeps the
-     original 40vh. */
-  body[data-sync] #side{max-height:47vh}
+  #footbar{flex-wrap:wrap;gap:6px 14px;padding:6px 12px}
+  /* Narrow enough that the path in the title bar is what has to give: the
+     mode buttons and Save cannot shrink past their own words, and squeezing
+     them was pushing Preview underneath Save. */
+  #crumb{display:none}
+  #bar{gap:6px;padding:8px 10px}
+  #status{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .seg button{padding:5px 8px}
+  #footgap{display:none}
+  #console{height:min(200px,40vh)}
 }
 </style>
 </head>
@@ -183,38 +277,55 @@ body.mode-edit #editWrap{border-right:0}
 <div id="boot">loading vault…</div>
 
 <div id="app">
-  <aside id="side">
-    <div id="brand"><h1>Notes</h1><span id="tally"></span></div>
-    <div id="tools">
-      <input id="q" type="search" placeholder="Search…" autocomplete="off" spellcheck="false">
-      <div style="display:flex;gap:6px">
-        <button class="btn" id="newBtn" style="flex:1">New note</button>
-        <button class="btn danger" id="trashBtn" title="Move to .trash/">Trash</button>
+  <div id="shell">
+    <aside id="side">
+      <div id="brand"><h1>Notes</h1><span id="tally"></span></div>
+      <div id="tools">
+        <input id="q" type="search" placeholder="Search…" autocomplete="off" spellcheck="false">
+        <div style="display:flex;gap:6px">
+          <button class="btn" id="newBtn" style="flex:1">New note</button>
+          <button class="btn danger" id="trashBtn" title="Move to trash/">Trash</button>
+        </div>
       </div>
-    </div>
-    <div id="list"></div>
-    <div id="sync" hidden>
-      <button class="btn" id="syncBtn">Sync now</button>
-      <div id="syncInfo"></div>
-    </div>
-  </aside>
+      <div id="list"></div>
+    </aside>
 
-  <main id="main">
-    <div id="bar">
-      <div id="crumb"></div>
-      <div id="status"></div>
-      <div class="seg">
-        <button data-mode="edit">Edit</button>
-        <button data-mode="split" class="on">Split</button>
-        <button data-mode="view">Preview</button>
+    <main id="main">
+      <div id="bar">
+        <button class="tog" id="leftBtn" title="Notes panel (Ctrl/⌘-B)">Notes</button>
+        <div id="crumb"></div>
+        <div id="status"></div>
+        <div class="seg">
+          <button data-mode="edit">Edit</button>
+          <button data-mode="split" class="on">Split</button>
+          <button data-mode="view">Preview</button>
+        </div>
+        <button class="btn primary" id="saveBtn" disabled>Save</button>
+        <button class="tog" id="rightBtn" title="Outline (Ctrl/⌘-E)">Outline</button>
       </div>
-      <button class="btn primary" id="saveBtn" disabled>Save</button>
+      <div id="panes">
+        <div id="editWrap"><textarea id="ed" spellcheck="false" placeholder="Pick a note…"></textarea></div>
+        <div id="viewWrap"><div id="view"></div></div>
+      </div>
+    </main>
+
+    <aside id="outline">
+      <div class="phead">Outline<span id="outTally"></span></div>
+      <div id="outBody"></div>
+    </aside>
+  </div>
+
+  <footer id="foot">
+    <div id="console"><div class="idle">Nothing has run yet.</div></div>
+    <div id="footbar">
+      <div class="chip" id="cloudChip"></div>
+      <div class="chip" id="gitChip"></div>
+      <div id="footgap"></div>
+      <div class="chip" id="syncChip"></div>
+      <button class="btn" id="syncBtn" hidden>Sync now</button>
+      <button class="tog" id="consoleBtn" title="What cairn has run (Ctrl/⌘-J)">Activity</button>
     </div>
-    <div id="panes">
-      <div id="editWrap"><textarea id="ed" spellcheck="false" placeholder="Pick a note…"></textarea></div>
-      <div id="viewWrap"><div id="view"></div></div>
-    </div>
-  </main>
+  </footer>
 </div>
 
 <div id="veil"><div id="dlg">
@@ -300,7 +411,13 @@ function codeTools(lang){
   return html + "</div>";
 }
 
-function render(text, ctx){
+/* `base` is the line this text started on inside the note body, so that the
+   headings and code blocks the renderer emits can carry an id naming their
+   source line — which is the one thing the outline in the right-hand panel
+   and the textarea on the left can both agree on. Nested renders (callouts,
+   blockquotes) pass their own offset down rather than restarting at zero. */
+function render(text, ctx, base){
+  base = base || 0;
   const [fm, body] = splitFm(text);
   const lines = body.split("\n");
   let out = fm !== null ? '<div class="fm">' + esc(fm.trim()) + "</div>" : "";
@@ -322,10 +439,11 @@ function render(text, ctx){
       flush();
       const lang = fence[1];
       const buf = [];
+      const at = i;
       i++;
       while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
       i++;
-      out += '<div class="cb">' + codeTools(lang)
+      out += '<div class="cb" id="L' + (base + at) + '">' + codeTools(lang)
            + "<pre><code" + (lang ? ' class="language-' + esc(lang) + '"' : "") + ">"
            + esc(buf.join("\n")) + "</code></pre></div>";
       continue;
@@ -338,10 +456,11 @@ function render(text, ctx){
       const kind = call[1].toLowerCase();
       const title = call[2].trim() || call[1].toUpperCase();
       const buf = [];
+      const at = i;
       i++;
       while (i < lines.length && /^>/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ""));
       out += '<div class="callout callout-' + esc(kind) + '"><div class="ct">' + esc(title) + "</div>"
-           + render(buf.join("\n"), ctx) + "</div>";
+           + render(buf.join("\n"), ctx, base + at + 1) + "</div>";
       continue;
     }
 
@@ -349,8 +468,9 @@ function render(text, ctx){
     if (/^>\s?/.test(line)){
       flush();
       const buf = [];
+      const at = i;
       while (i < lines.length && /^>/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ""));
-      out += "<blockquote>" + render(buf.join("\n"), ctx) + "</blockquote>";
+      out += "<blockquote>" + render(buf.join("\n"), ctx, base + at) + "</blockquote>";
       continue;
     }
 
@@ -373,7 +493,7 @@ function render(text, ctx){
     if (h){
       flush();
       const n = h[1].length;
-      out += "<h" + n + ">" + inline(h[2], ctx) + "</h" + n + ">";
+      out += "<h" + n + ' id="L' + (base + i) + '">' + inline(h[2], ctx) + "</h" + n + ">";
       i++;
       continue;
     }
@@ -454,31 +574,82 @@ function setDirty(v){
   drawList(qEl.value);
 }
 
+/* ------------------------------ the tree ------------------------------ */
+/* Folders come out of the note paths themselves; there is no separate listing
+   of directories, so a folder with no notes in it simply isn't there. Which
+   folders are shut is remembered per vault, and a search ignores the memory —
+   a match three folders down is no use behind a closed one.                */
+
+let SHUT = new Set();
+try { SHUT = new Set(JSON.parse(localStorage.getItem("notes-shut") || "[]")); }
+catch (e) {}
+
+function rememberShut(){
+  try { localStorage.setItem("notes-shut", JSON.stringify([...SHUT])); } catch (e) {}
+}
+
+function treeOf(notes){
+  const root = {dirs: new Map(), notes: [], count: 0};
+  for (const n of notes){
+    const parts = n.path.split("/");
+    let node = root, here = "";
+    node.count++;
+    for (let k = 0; k < parts.length - 1; k++){
+      here = here ? here + "/" + parts[k] : parts[k];
+      if (!node.dirs.has(parts[k]))
+        node.dirs.set(parts[k], {dirs: new Map(), notes: [], count: 0, path: here});
+      node = node.dirs.get(parts[k]);
+      node.count++;
+    }
+    node.notes.push(n);
+  }
+  return root;
+}
+
+function row(depth, cls){
+  const b = document.createElement("button");
+  b.className = "row " + cls;
+  b.style.paddingLeft = (9 + depth * 13) + "px";
+  return b;
+}
+
+function span(parent, cls, text){
+  const el = document.createElement("span");
+  el.className = cls;
+  el.textContent = text;
+  parent.appendChild(el);
+  return el;
+}
+
+function drawBranch(node, depth, into, forceOpen){
+  for (const [name, kid] of node.dirs){
+    const shut = !forceOpen && SHUT.has(kid.path);
+    const b = row(depth, "dir" + (shut ? " shut" : ""));
+    b.dataset.fold = kid.path;
+    span(b, "tw", "▼");
+    span(b, "nm", name);
+    span(b, "ct", kid.count);
+    into.appendChild(b);
+    if (!shut) drawBranch(kid, depth + 1, into, forceOpen);
+  }
+  for (const n of node.notes){
+    const on = current && n.path === current.path;
+    const b = row(depth, "note" + (on ? " on" : ""));
+    b.dataset.open = n.path;
+    b.title = n.path;
+    span(b, "tw", "");                      /* keeps titles off the twisty column */
+    span(b, "nm", n.title);
+    if (on && dirty) span(b, "mk", "●");
+    into.appendChild(b);
+  }
+}
+
 function drawList(filter){
   const f = (filter || "").trim().toLowerCase();
   const shown = f ? NOTES.filter(n =>
     (n.title + " " + n.path + " " + n.tags.join(" ") + " " + n.raw).toLowerCase().includes(f)) : NOTES;
   listEl.innerHTML = "";
-  let folder = null;
-  for (const n of shown){
-    if (n.folder !== folder){
-      folder = n.folder;
-      const g = document.createElement("div");
-      g.className = "grp";
-      g.textContent = folder === "(root)" ? "Vault root" : folder;
-      listEl.appendChild(g);
-    }
-    const b = document.createElement("button");
-    b.className = "item" + (current && n.path === current.path ? " on" : "");
-    b.dataset.open = n.path;
-    b.textContent = n.title;
-    if (dirty && current && n.path === current.path){
-      const d = document.createElement("span");
-      d.className = "dot"; d.textContent = " ●";
-      b.appendChild(d);
-    }
-    listEl.appendChild(b);
-  }
+  drawBranch(treeOf(shown), 0, listEl, !!f);
   $("tally").textContent = f ? shown.length + "/" + NOTES.length : NOTES.length + " notes";
   if (f && !shown.length){
     const g = document.createElement("div");
@@ -487,8 +658,213 @@ function drawList(filter){
   }
 }
 
+/* Opening a note from a wikilink or from search can land inside a folder that
+   is shut, which would leave nothing highlighted anywhere. */
+function reveal(path){
+  const parts = path.split("/");
+  let here = "", changed = false;
+  for (let k = 0; k < parts.length - 1; k++){
+    here = here ? here + "/" + parts[k] : parts[k];
+    if (SHUT.delete(here)) changed = true;
+  }
+  if (changed) rememberShut();
+}
+
+/* ----------------------------- the outline ----------------------------- */
+/* Built from the text in the textarea, not from the rendered HTML, so it keeps
+   up as you type and knows the source line of everything it lists. The line is
+   the whole trick: the renderer puts the same number in an id, so one outline
+   entry can move the preview and the caret to the same place.               */
+
+let OUT_OFF = 0;                 /* body line 0 is this line of the file */
+
+function linksIn(line, out, seen){
+  /* Inline code is not a link, and an ![[embed]] is an image, not one either. */
+  let t = line.replace(/`[^`]*`/g, " ").replace(/!\[\[[^\]]+\]\]/g, " ");
+  const keep = (key, item) => { if (!seen.has(key)){ seen.add(key); out.push(item); } };
+
+  t = t.replace(/\[\[([^\]]+)\]\]/g, (m, raw) => {
+    const bar = raw.indexOf("|");
+    const target = (bar < 0 ? raw : raw.slice(0, bar)).trim();
+    const label  = (bar < 0 ? raw : raw.slice(bar + 1)).trim();
+    keep("w:" + target, {kind: "wiki", target: target, label: label || target});
+    return " ";
+  });
+  t = t.replace(/\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, (m, label, href) => {
+    keep("u:" + href, {kind: "url", href: href, label: label.trim() || href});
+    return " ";
+  });
+  t.replace(/(^|[\s(])(https?:\/\/[^\s<>)"']+[^\s<>)"'.,;:!?])/g, (m, pre, href) => {
+    keep("u:" + href, {kind: "url", href: href, label: href});
+    return m;
+  });
+}
+
+function plain(s){
+  return s.replace(/`([^`]*)`/g, "$1")
+          .replace(/\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g, (m, a, b) => b || a)
+          .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+          .replace(/[*_~]/g, "")
+          .trim();
+}
+
+function outlineOf(text){
+  const [fm, body] = splitFm(text);
+  /* Line numbers in the outline are body-relative, because that is what the
+     renderer counts. The textarea holds the frontmatter too. */
+  const off = fm === null ? 0 : fm.split("\n").length + 2;
+  const lines = body.split("\n");
+  const items = [], links = [], seen = new Set();
+  let i = 0;
+
+  while (i < lines.length){
+    const fence = lines[i].match(/^```(\S*)/);
+    if (fence){
+      const at = i, lang = (fence[1] || "").toLowerCase();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      /* The first line that says anything is what a code block is "called" —
+         a bare fence has no other label, and a URL in a command is not a link
+         anyone can follow from here. */
+      const first = (buf.find(l => l.trim()) || "").trim();
+      items.push({kind: "code", line: at, lang: lang,
+                  text: first.slice(0, 120) || lang || "code block"});
+      continue;
+    }
+    const h = lines[i].match(/^(#{1,6})\s+(.*)$/);
+    if (h) items.push({kind: "h", line: i, level: h[1].length, text: plain(h[2])});
+    linksIn(lines[i], links, seen);
+    i++;
+  }
+  return {items: items, links: links, off: off};
+}
+
+function host(href){
+  try { return new URL(href).hostname.replace(/^www\./, ""); }
+  catch (e) { return ""; }
+}
+
+function drawOutline(){
+  const box = $("outBody");
+  box.innerHTML = "";
+  if (!current){
+    box.innerHTML = '<div class="none">No note open.</div>';
+    $("outTally").textContent = "";
+    return;
+  }
+  const o = outlineOf(edEl.value);
+  OUT_OFF = o.off;
+
+  for (const it of o.items){
+    const b = document.createElement("button");
+    b.dataset.line = it.line;
+    if (it.kind === "h"){
+      b.className = "o h" + it.level;
+      span(b, "nm", it.text || "untitled heading");
+    } else {
+      b.className = "o code";
+      if (it.lang) span(b, "tag", it.lang);
+      span(b, "nm", it.text);
+    }
+    b.title = it.text;
+    box.appendChild(b);
+  }
+  if (!o.items.length)
+    box.innerHTML = '<div class="none">No headings or code blocks yet.</div>';
+
+  if (o.links.length){
+    const head = document.createElement("div");
+    head.className = "osec";
+    head.textContent = "Links";
+    box.appendChild(head);
+    for (const l of o.links){
+      if (l.kind === "wiki"){
+        const path = TARGETS[l.target];
+        const b = document.createElement("button");
+        b.className = "o link" + (path ? "" : " dead");
+        if (path){ b.dataset.open = path; b.title = path; }
+        else b.title = "no note called that";
+        span(b, "nm", l.label);
+        span(b, "host", "note");
+        box.appendChild(b);
+      } else {
+        const a = document.createElement("a");
+        a.className = "o link";
+        a.href = l.href; a.target = "_blank"; a.rel = "noopener noreferrer";
+        a.title = l.href;
+        span(a, "nm", l.label);
+        span(a, "host", host(l.href));
+        box.appendChild(a);
+      }
+    }
+  }
+  $("outTally").textContent = o.items.length + " item" + (o.items.length === 1 ? "" : "s")
+    + (o.links.length ? " · " + o.links.length + " link" + (o.links.length === 1 ? "" : "s") : "");
+  spy();
+}
+
+function caretTo(fileLine){
+  const upto = edEl.value.split("\n").slice(0, fileLine);
+  const pos = upto.join("\n").length + (upto.length ? 1 : 0);
+  edEl.focus();
+  edEl.setSelectionRange(pos, pos);
+  /* Setting the selection on a textarea that is already focused does not
+     scroll it, and line × line-height is wrong the moment a line wraps.
+     Leaving and coming back makes the browser scroll its own caret in. */
+  edEl.blur();
+  edEl.focus();
+}
+
+function gotoLine(line){
+  const mode = document.body.className;
+  /* The caret first. Focusing the textarea scrolls it, and a browser treats
+     that as the user taking over — it cancels a smooth scroll already running
+     in the preview, which left the preview short of where it was going. */
+  if (mode !== "mode-view") caretTo(line + OUT_OFF);
+  const el = document.getElementById("L" + line);
+  if (el && mode !== "mode-edit")
+    el.scrollIntoView({block: "start", behavior: "smooth"});
+  /* Near the end of a note there is not enough left to scroll, so the target
+     cannot reach the top and the scroll-spy would rightly say the current
+     section is still the one above it. What you clicked is the answer you
+     want back, so it wins until you scroll for yourself. */
+  mark(line);
+  spyHold = Date.now() + 700;
+}
+
+function mark(line){
+  for (const b of $("outBody").querySelectorAll(".here")) b.classList.remove("here");
+  const b = $("outBody").querySelector('[data-line="' + line + '"]');
+  if (b) b.classList.add("here");
+}
+
+/* Which entry the preview is currently sitting on. rAF-throttled: this runs
+   on every scroll event and reads layout for each entry. */
+let spying = false, spyHold = 0;
+function spy(){
+  if (spying || Date.now() < spyHold) return;
+  spying = true;
+  requestAnimationFrame(() => {
+    spying = false;
+    const wrap = $("viewWrap");
+    if (!wrap.offsetParent) return;             /* preview not on screen */
+    const line = wrap.getBoundingClientRect().top + 48;
+    let hit = null;
+    for (const b of $("outBody").querySelectorAll("button[data-line]")){
+      const el = document.getElementById("L" + b.dataset.line);
+      if (!el) continue;
+      if (el.getBoundingClientRect().top <= line) hit = b; else break;
+    }
+    for (const b of $("outBody").querySelectorAll(".here")) b.classList.remove("here");
+    if (hit) hit.classList.add("here");
+  });
+}
+
 function preview(){
   viewEl.innerHTML = render(edEl.value, ctx());
+  drawOutline();
 }
 
 function open_(path){
@@ -499,10 +875,13 @@ function open_(path){
   edEl.value = n.raw;
   crumbEl.textContent = n.path;
   preview();
+  $("viewWrap").scrollTop = 0;
+  edEl.scrollTop = 0;
   setDirty(false);
   setStatus("", "");
   document.title = n.title + " — Notes";
   $("trashBtn").disabled = false;
+  reveal(n.path);
   drawList(qEl.value);
 }
 
@@ -592,12 +971,15 @@ async function trashNote(){
   } catch (e){ setStatus(e.message, "error"); }
 }
 
-/* ----------------------------- sync ----------------------------- */
-/* The button is hidden unless the server was started with --sync-cmd, so a
-   plain cairn looks exactly as it did before.                              */
+/* ----------------------------- the footer ----------------------------- */
+/* Three things move these notes around: whatever the sync command does, the
+   provider folder the vault sits in, and git. The footer is a window on all
+   three and a control for none of them — the only button that acts is the one
+   that was already here, and git is read with --no-optional-locks so that
+   looking cannot collide with a git command in a terminal.                 */
 
-const syncEl = $("sync"), syncBtn = $("syncBtn"), syncInfo = $("syncInfo");
-let SYNC = null;
+const syncBtn = $("syncBtn"), consoleEl = $("console");
+let SYNC = null, GIT = null, CLOUD = null;
 
 function rel(t){
   const delta = t * 1000 - Date.now(), ahead = delta > 0;
@@ -611,39 +993,166 @@ function rel(t){
   return ahead ? "in " + phrase : phrase + " ago";
 }
 
+function chip(el, dot, parts, title){
+  el.innerHTML = '<span class="dot ' + dot + '"></span>'
+               + parts.filter(Boolean).join('<span class="sep"> · </span>');
+  el.title = title || "";
+  el.hidden = false;
+}
+
+function drawCloud(){
+  const c = CLOUD, el = $("cloudChip");
+  if (!c || !c.detected){
+    return chip(el, "", ["Not in a sync folder"],
+      "cairn looks at the vault's path for a provider's folder — Proton Drive, "
+      + "iCloud or Dropbox. This vault is not inside one, so nothing off this "
+      + "machine has a copy unless git is pushing somewhere.");
+  }
+  /* The newest note on disk, from the listing the page already has. It is the
+     honest half of this chip: cairn can see when a file last changed, and
+     cannot see whether the provider has finished uploading it. */
+  const newest = NOTES.reduce((m, n) => Math.max(m, n.mtime || 0), 0);
+  chip(el, c.present ? "ok" : "bad",
+       ["<b>" + esc(c.provider) + "</b>",
+        c.account ? esc(c.account) : null,
+        c.present ? (newest ? "note saved " + esc(rel(newest)) : "no notes yet")
+                  : '<span class="bad">folder is not there</span>'],
+       c.present
+         ? "The vault is inside " + c.root + ".\n\ncairn can see that folder and "
+           + "when its files last changed. It cannot see " + c.provider + "'s "
+           + "upload queue, so this does not promise the last save has reached "
+           + "the cloud."
+         : c.root + " is not readable right now — the client may be signed out "
+           + "or not running.");
+}
+
+function drawGit(){
+  const g = GIT, el = $("gitChip");
+  if (!g || !g.repo)
+    return chip(el, "", ["Not a git repo"],
+                "No git repository at or above the vault.");
+  const bits = [];
+  bits.push("<b>" + esc(g.detached ? "detached HEAD" : (g.branch || "?")) + "</b>");
+
+  const work = [];
+  if (g.changed)   work.push(g.changed + " changed");
+  if (g.untracked) work.push(g.untracked + " new");
+  bits.push(work.length ? work.join(", ") : "clean");
+
+  if (g.upstream && (g.ahead || g.behind)){
+    const d = [];
+    if (g.ahead)  d.push("↑" + g.ahead);
+    if (g.behind) d.push("↓" + g.behind);
+    bits.push(d.join(" "));
+  }
+  if (g.last) bits.push("committed " + esc(rel(g.last.at)));
+
+  /* Amber for anything that is only on this machine — uncommitted work, or
+     commits that have not been pushed. Red is reserved for a failure. */
+  const dot = (!g.clean || g.ahead) ? "warn" : "ok";
+  const lines = [g.root];
+  if (g.upstream) lines.push("tracking " + g.upstream);
+  else lines.push("no upstream branch — nothing to push to");
+  if (g.last) lines.push(g.last.short + "  " + g.last.subject);
+  lines.push("Read-only: cairn never stages, commits or pushes.");
+  chip(el, dot, bits, lines.join("\n"));
+}
+
 function drawSync(){
-  const s = SYNC;
-  /* An attribute rather than a class: the Edit/Split/Preview buttons assign
-     body.className outright, which would silently drop a class set here. */
-  if (s && s.enabled) document.body.dataset.sync = "on";
-  else delete document.body.dataset.sync;
-  if (!s || !s.enabled){ syncEl.hidden = true; return; }
-  syncEl.hidden = false;
+  const s = SYNC, el = $("syncChip");
+  if (!s || !s.enabled){
+    el.hidden = true;
+    syncBtn.hidden = true;
+    return;
+  }
+  syncBtn.hidden = false;
   syncBtn.disabled = !!s.running;
   syncBtn.textContent = s.running ? "Syncing…" : "Sync now";
 
+  if (s.running) return chip(el, "run", ["<b>Syncing…</b>"], "The sync command is running.");
+
   /* A run started by the timer never passes through cairn, so its time comes
      from systemd and the button's own runs come from the state file. Whichever
-     is more recent is the one that actually touched the notes.             */
+     is more recent is the one that actually touched the notes. */
   const mine = s.last && s.last.at, theirs = s.timer_last;
   const last = Math.max(mine || 0, theirs || 0) || null;
   const failed = s.last && !s.last.ok && mine && mine >= (theirs || 0);
 
-  const bits = [];
-  if (last) bits.push("Last sync <b>" + esc(rel(last)) + "</b>" +
-                      (failed ? ' <span class="bad">— failed</span>' : ""));
-  else      bits.push("No sync yet");
-  if (s.next) bits.push("Next <b>" + esc(rel(s.next)) + "</b>");
-  syncInfo.innerHTML = bits.join("<br>");
+  chip(el, failed ? "bad" : (last ? "ok" : ""),
+       [last ? "Synced <b>" + esc(rel(last)) + "</b>"
+                + (failed ? ' <span class="bad">— failed</span>' : "")
+             : "No sync yet",
+        s.next ? "next <b>" + esc(rel(s.next)) + "</b>" : null],
+       failed && s.last.output ? s.last.output.trim().split("\n").slice(-6).join("\n") : "");
 }
 
-async function refreshSync(){
-  try {
-    SYNC = (await api("/api/sync/status")).sync;
-  } catch (e){
-    SYNC = null;                         /* server too old, or not unlocked */
-  }
+function drawFoot(){
+  drawCloud();
+  drawGit();
   drawSync();
+}
+
+async function refreshStatus(){
+  try {
+    const r = await api("/api/status");
+    SYNC = r.sync; GIT = r.git; CLOUD = r.cloud;
+  } catch (e){
+    SYNC = GIT = CLOUD = null;               /* server too old, or not unlocked */
+  }
+  drawFoot();
+  /* A sync the timer started is nobody's click, so this is where the activity
+     panel finds out there is something to follow. */
+  if (SYNC && SYNC.running) scheduleLog(0);
+}
+
+/* ---------------------------- activity panel ---------------------------- */
+/* Every line cairn has run, asked for by sequence number so an open panel
+   costs one small response per poll however long the script has been talking. */
+
+let LOG_SEQ = 0, LOG_EMPTY = true, logSoon = null;
+
+function clock(t){
+  const d = new Date(t * 1000);
+  return String(d.getHours()).padStart(2, "0") + ":"
+       + String(d.getMinutes()).padStart(2, "0") + ":"
+       + String(d.getSeconds()).padStart(2, "0");
+}
+
+function addLines(lines){
+  if (!lines.length) return;
+  if (LOG_EMPTY){ consoleEl.innerHTML = ""; LOG_EMPTY = false; }
+  /* Follow the tail only for someone who is already at it — scrolling back to
+     read an error should not be yanked away by the next line. */
+  const stuck = consoleEl.scrollTop + consoleEl.clientHeight >= consoleEl.scrollHeight - 24;
+  for (const l of lines){
+    const d = document.createElement("div");
+    d.className = "ln " + (l.kind || "out");
+    span(d, "t", clock(l.at));
+    span(d, "m", l.text || "");
+    consoleEl.appendChild(d);
+  }
+  while (consoleEl.children.length > 600) consoleEl.firstChild.remove();
+  if (stuck) consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+async function logTick(){
+  let running = false;
+  try {
+    const r = await api("/api/run/log?since=" + LOG_SEQ);
+    LOG_SEQ = r.seq;
+    addLines(r.lines);
+    running = r.running;
+  } catch (e){ /* the next poll can try again */ }
+  consoleBtn.classList.toggle("busy", running);
+  /* Follow a run closely; idle, only often enough that a panel left open
+     notices a timer-driven sync. Closed and idle: stop asking. */
+  if (running) scheduleLog(900);
+  else if (document.body.dataset.console === "on") scheduleLog(6000);
+}
+
+function scheduleLog(ms){
+  clearTimeout(logSoon);
+  logSoon = setTimeout(logTick, ms);
 }
 
 async function doSync(){
@@ -656,6 +1165,8 @@ async function doSync(){
   syncBtn.disabled = true;
   syncBtn.textContent = "Syncing…";
   setStatus("syncing…");
+  panel("console", true);                    /* the point of pressing it */
+  scheduleLog(0);
   try {
     const record = (await api("/api/sync", {method: "POST"})).sync;
     /* The notes on disk may have changed underneath us, including the open
@@ -669,18 +1180,63 @@ async function doSync(){
       setStatus("sync finished in " + record.seconds + "s", "saved");
     } else {
       /* The exit code alone tells the user nothing. The script's last line is
-         usually the reason it stopped, and is the only part of the output that
-         reaches the page at all.                                            */
+         usually the reason it stopped, and the activity panel above has the
+         rest of it.                                                        */
       const lines = (record.output || "").trim().split("\n").filter(l => l.trim());
       const why = lines.length ? lines[lines.length - 1].slice(0, 140) : "";
       setStatus("sync failed" + (record.code == null ? "" : " (exit " + record.code + ")")
                 + (why ? " — " + why : ""), "error");
-      if (record.output) console.error(record.output);
     }
   } catch (e){
     setStatus(e.message, "error");
   }
-  await refreshSync();
+  scheduleLog(0);
+  await refreshStatus();
+}
+
+/* ------------------------------- panels ------------------------------- */
+/* Attributes rather than classes, because the Edit/Split/Preview buttons
+   assign body.className outright and would drop anything kept there. */
+
+const PANELS = {left: $("leftBtn"), right: $("rightBtn"), console: $("consoleBtn")};
+const consoleBtn = PANELS.console;
+
+function panel(which, on){
+  document.body.dataset[which] = on ? "on" : "off";
+  PANELS[which].classList.toggle("on", on);
+  try { localStorage.setItem("notes-panel-" + which, on ? "on" : "off"); } catch (e) {}
+  if (which === "console" && on){
+    LOG_EMPTY = consoleEl.children.length === 0 || !!consoleEl.querySelector(".idle");
+    scheduleLog(0);
+  }
+  /* Narrow enough that a panel covers the note rather than sitting beside it:
+     two of them at once would cover it twice over. */
+  if (on && which !== "console" && window.innerWidth <= 900){
+    const other = which === "left" ? "right" : "left";
+    if (document.body.dataset[other] === "on") panel(other, false);
+  }
+  if (which !== "console") spy();            /* the preview just changed width */
+}
+
+function toggle(which){ panel(which, document.body.dataset[which] !== "on"); }
+
+/* Ctrl-B, Ctrl-E and Ctrl-J are all real emacs bindings inside a text field on
+   a Mac — back a character, end of line, newline — so there the shortcut is
+   Command and nothing else. Save and New are Ctrl-S and Ctrl-N, which are not,
+   and take either. */
+const MAC = /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent);
+const mod = e => MAC ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+
+function restorePanels(){
+  const wide = window.innerWidth > 900;
+  for (const which of ["left", "right", "console"]){
+    let want = null;
+    try { want = localStorage.getItem("notes-panel-" + which); } catch (e) {}
+    if (want === null) want = (which !== "console" && wide) ? "on" : "off";
+    /* A phone that once opened a panel on a desktop-width window should still
+       open on the note itself. */
+    panel(which, want === "on" && (wide || which === "console"));
+  }
 }
 
 /* ---------------------------- boot ---------------------------- */
@@ -752,9 +1308,24 @@ async function codeAction(btn){
 }
 
 listEl.addEventListener("click", e => {
+  const f = e.target.closest("[data-fold]");
+  if (f){
+    if (SHUT.has(f.dataset.fold)) SHUT.delete(f.dataset.fold);
+    else SHUT.add(f.dataset.fold);
+    rememberShut();
+    return drawList(qEl.value);
+  }
   const b = e.target.closest("[data-open]");
   if (b) open_(b.dataset.open);
 });
+
+$("outBody").addEventListener("click", e => {
+  const b = e.target.closest("[data-open]");
+  if (b){ e.preventDefault(); return open_(b.dataset.open); }
+  const j = e.target.closest("[data-line]");
+  if (j) gotoLine(+j.dataset.line);
+});
+$("viewWrap").addEventListener("scroll", spy, {passive: true});
 viewEl.addEventListener("click", e => {
   const a = e.target.closest("a.wl[data-open]");
   if (a){ e.preventDefault(); open_(a.dataset.open); }
@@ -776,10 +1347,20 @@ edEl.addEventListener("keydown", e => {
 qEl.addEventListener("input", () => drawList(qEl.value));
 saveBtn.addEventListener("click", save);
 syncBtn.addEventListener("click", doSync);
-/* Re-render often enough that "in 25 minutes" stays honest, but only ask the
-   server every few minutes — each status call spawns a systemctl.          */
-setInterval(drawSync, 30 * 1000);
-setInterval(refreshSync, 5 * 60 * 1000);
+$("leftBtn").addEventListener("click", () => toggle("left"));
+$("rightBtn").addEventListener("click", () => toggle("right"));
+$("consoleBtn").addEventListener("click", () => toggle("console"));
+window.addEventListener("resize", () => {
+  /* Dragging a wide window narrow with both panels open would leave the note
+     under two overlays at once. */
+  if (window.innerWidth <= 900 && document.body.dataset.left === "on"
+      && document.body.dataset.right === "on") panel("right", false);
+  spy();
+}, {passive: true});
+/* Re-render often enough that "3 minutes ago" stays honest, but ask the server
+   less often — a status call can spawn a systemctl and a handful of gits. */
+setInterval(drawFoot, 30 * 1000);
+setInterval(refreshStatus, 60 * 1000);
 $("newBtn").addEventListener("click", openDialog);
 $("trashBtn").addEventListener("click", trashNote);
 $("dlgCancel").addEventListener("click", closeDialog);
@@ -799,9 +1380,15 @@ document.querySelectorAll(".seg button").forEach(b => {
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key === "s"){ e.preventDefault(); save(); }
   if ((e.ctrlKey || e.metaKey) && e.key === "n"){ e.preventDefault(); openDialog(); }
+  if (mod(e) && !e.altKey && !e.shiftKey){
+    if (e.key === "b"){ e.preventDefault(); toggle("left"); }
+    if (e.key === "e"){ e.preventDefault(); toggle("right"); }
+    if (e.key === "j"){ e.preventDefault(); toggle("console"); }
+  }
   if (e.key === "Escape"){
     if ($("veil").classList.contains("open")) closeDialog();
     else if (document.activeElement === qEl){ qEl.value = ""; drawList(""); qEl.blur(); }
+    else if (document.body.dataset.console === "on") panel("console", false);
   }
   if (e.key === "/" && document.activeElement !== qEl && document.activeElement !== edEl
       && !$("veil").classList.contains("open")){
@@ -822,13 +1409,15 @@ window.addEventListener("beforeunload", e => {
       document.querySelectorAll(".seg button").forEach(x =>
         x.classList.toggle("on", x.dataset.mode === mode));
     }
+    restorePanels();
     await reload();
     $("boot").remove();
     const readme = NOTES.find(n => n.path === "README.md") || NOTES[0];
     if (readme) open_(readme.path);
-    /* After the notes are up: the sidebar is usable without it, and it is the
-       one call that can spawn a subprocess on the server.                   */
-    refreshSync();
+    else drawOutline();
+    /* After the notes are up: the panels are usable without it, and it is the
+       one call that can spawn subprocesses on the server.                   */
+    refreshStatus();
   } catch (e){
     $("boot").textContent = "Could not reach the notes server: " + e.message;
   }

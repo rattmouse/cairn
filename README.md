@@ -5,6 +5,9 @@ standard library only: no dependencies, no build step, no internet.
 
 ![The cairn editor: note list on the left, markdown source in the middle, live preview on the right](docs/screenshot.png)
 
+> The two screenshots below predate the tree, the outline panel and the
+> footer. They still show the middle of the window accurately.
+
 The screenshot is the demo vault in `docs/demo-vault/` — nine invented notes,
 not anyone's real ones. You can run the editor against it yourself:
 
@@ -24,6 +27,54 @@ python3 notes-server.py --vault ~/Documents/notes
 
 Opens on `127.0.0.1:8765`. Edit on the left, live preview on the right,
 `Ctrl-S` saves straight to the `.md` file on disk.
+
+## The window
+
+Four parts, three of which you can put away:
+
+| Part | What's in it | Toggle |
+| --- | --- | --- |
+| Left | The vault as a tree. Folders come from the note paths, remember whether they were shut, and open themselves when you follow a link into one. Search flattens nothing — it filters and opens everything that matched. | `Ctrl/⌘-B` |
+| Middle | Source, preview, or both. | — |
+| Right | An outline of the open note: its headings, one entry per fenced code block, and every link it contains at the bottom. Built from the text as you type. Clicking an entry moves the preview *and* the caret to that line; scrolling the preview moves the highlight. | `Ctrl/⌘-E` |
+| Bottom | Sync status, always on. Left to right: the provider folder the vault is in, the git repository, and the sync command. | — |
+| Activity | Inside the footer: every line of every command cairn has run, as it runs. | `Ctrl/⌘-J` |
+
+## The footer
+
+Three ways these notes leave this machine, and cairn watching all three.
+
+**The sync folder.** cairn looks at the vault's own path for a provider's
+folder — Proton Drive, iCloud, Dropbox — and names what it finds, along with
+the account the folder is signed in as and when a note last changed on disk.
+It stops there, deliberately: Proton Drive on macOS is a File Provider
+extension with no public interface to its upload queue, so a green dot here
+means *the folder is there and readable*, not *your last save is in the
+cloud*. The chip's tooltip says as much rather than implying otherwise.
+
+**Git.** If the vault is in a repository — at any level above it — the footer
+shows the branch, how many files are modified and how many are new, how far
+ahead or behind its upstream it is, and when the last commit landed. Amber
+means something exists only on this machine: uncommitted work, or commits
+that have not been pushed.
+
+This is read-only, and stays read-only. cairn never stages, commits or pushes,
+and every git command it runs carries `--no-optional-locks` so that looking at
+the repository cannot collide with a git command you are running in a terminal
+on the same one.
+
+**The sync command.** Whatever `--sync-cmd` points at: your script, run with
+no arguments, no shell and nothing from the request. The footer shows when it
+last ran, whether it worked, and — with `--sync-timer` — when it next will. A
+run started by the timer rather than by the button still shows up here.
+
+## Activity
+
+Everything cairn runs, in the panel above the footer. The sync script's output
+arrives line by line while it is still running rather than in one lump when it
+finishes, so a slow sync shows you where it has got to. Opening a terminal
+from a code block leaves a line here too. It is this process's own record and
+lives in memory: restarting the server empties it.
 
 Reachable from another machine on the same network:
 
@@ -46,6 +97,8 @@ the login token cross the network in the clear.
 | `--no-browser` | Don't open a browser on start. |
 | `--terminal-cwd PATH` | Where "open in terminal" starts. Default `~/workspace`. |
 | `--no-terminal` | Never open a terminal window. |
+| `--sync-cmd PATH` | An executable to run when you press Sync now. Without it there is no button and `/api/sync` is a 404. |
+| `--sync-timer UNIT` | A systemd `--user` timer to read the next scheduled sync from, e.g. `vault-sync.timer`. |
 
 ## Code blocks
 
@@ -123,6 +176,8 @@ without invalidating anything.
   notes forever — and the `--tls` private key never reaches the cloud.
   Older vaults with `.backups/`, `.trash/` or `.certs/` inside them are moved
   out on the next start; the banner says where.
+- Reading git and the sync folder is read-only and takes no arguments from a
+  request: fixed argv, no shell, and nothing that writes.
 - A save is refused if the file changed on disk since the browser loaded it.
 - Paths are resolved against the vault root; only `.md` files can be written.
 - Opening a terminal is refused for anything but a browser on this machine,
@@ -149,7 +204,9 @@ YAML frontmatter. Footnotes and nested blockquotes are not handled.
 python3 tests/test_server.py
 ```
 
-Checks over auth, reading, writing, path safety, TLS, and opening a terminal.
+Checks over auth, reading, writing, path safety, TLS, opening a terminal, and
+the footer's own endpoints — including a throwaway repository inside a
+folder named the way Proton Drive names its own.
 Standard library only. It builds a throwaway vault in `/tmp` and never touches
 a real one. No terminal window is opened during the tests: a shim records what
 the server tried to launch, and the shell part is driven under a pty, which is
