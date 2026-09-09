@@ -304,6 +304,149 @@ def test_tls(vault, port):
 
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# The terminal endpoint. No window is ever opened here: $CAIRN_TERMINAL points
+# the server at a shim that records what it was asked to launch. The last check
+# then runs the real rcfile under a pty and proves the command is typed rather
+# than executed, which is the whole promise of the feature.
+
+SHIM = """#!/bin/bash
+{ echo "argv: $*"; echo "cwd: $PWD"; echo "cmd: $CAIRN_CMD"; } > "$CAIRN_RECORD"
+for a in "$@"; do
+  [ -f "$a" ] && cp "$a" "$CAIRN_RECORD.rc"   # the rcfile deletes itself; keep a copy
+done
+"""
+
+
+def wait_for(path, seconds=5):
+    """The server launches the terminal and answers; the shim writes a moment
+    later. Every check below reads that file, so wait for it to land."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if os.path.exists(path) and os.path.getsize(path):
+            time.sleep(0.1)
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def typed_not_run(rc, command, home):
+    """Drive bash with the real rcfile through a pty. Returns what got typed."""
+    import fcntl
+    import pty
+    import select
+    import struct
+    import termios
+    env = dict(os.environ, CAIRN_CMD=command, CAIRN_RC_DIR=os.path.join(home, "gone"),
+               HOME=home, TERM="xterm", PS1="$ ")
+    pid, fd = pty.fork()
+    if pid == 0:                                    # child: the shell under test
+        os.execvpe("bash", ["bash", "--rcfile", rc, "-i"], env)
+    # Wide window: readline wraps what it types at the terminal width, and a
+    # wrapped line would look like a different string to the check below.
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 400, 0, 0))
+    buf, deadline = b"", time.time() + 6
+    while time.time() < deadline:
+        r, _, _ = select.select([fd], [], [], 0.3)
+        if fd not in r:
+            continue
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        if b"\x1b[5n" in chunk:                     # play the terminal emulator
+            os.write(fd, b"\x1b[0n")
+    try:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+    except OSError:
+        pass
+    os.close(fd)
+    return buf.decode("utf-8", "replace")
+
+
+def test_terminal(vault, port):
+    print("\nopen in terminal")
+    shim = os.path.join(vault, "fake-terminal")
+    record = os.path.join(vault, "launched.txt")
+    home = os.path.join(vault, "home")
+    os.makedirs(home, exist_ok=True)
+    with open(shim, "w") as f:
+        f.write(SHIM)
+    os.chmod(shim, 0o755)
+    os.environ["CAIRN_TERMINAL"] = shim
+    os.environ["CAIRN_RECORD"] = record
+
+    p, token, _ = start(vault, port, ["--terminal-cwd", vault])
+    try:
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % port
+        url = base + "/api/terminal"
+        hdr = {"Content-Type": "application/json"}
+
+        s, _ = call(op, url, data=b'{"command":"echo hi"}', method="POST", headers=hdr)
+        check("terminal endpoint needs a session", s == 403)
+        check("nothing launched while locked", not os.path.exists(record))
+
+        form(op, base, token)
+        s, b = call(op, base + "/api/notes")
+        check("capability advertised to the client", json.loads(b)["terminal"] is True)
+
+        # A note is just text, and text can be hostile. This one tries to break
+        # out of the quoting and run something; it must arrive as characters.
+        nasty = 'foo"; touch %s/PWNED; echo "' % vault
+        s, b = call(op, url, data=json.dumps({"command": nasty}).encode(),
+                    method="POST", headers=hdr)
+        check("opens a terminal", s == 200 and json.loads(b)["ok"] is True)
+        check("the emulator was actually launched", wait_for(record))
+        rec = open(record).read() if os.path.exists(record) else ""
+        check("launched at the requested directory", ("cwd: " + vault) in rec)
+        check("starts an interactive shell, runs no command", "bash --rcfile" in rec
+              and "-i" in rec and "-c" not in rec)
+        check("command travels in the environment, not argv",
+              ("cmd: " + nasty) in rec and nasty not in rec.split("cmd:")[0])
+        rc = record + ".rc"
+        body = open(rc).read() if os.path.exists(rc) else ""
+        check("command is not written into the rcfile", bool(body) and nasty not in body)
+        check("rcfile deleted itself from /tmp", not os.path.isdir("/tmp/cairn-term-x"))
+
+        s, _ = call(op, url, data=b'{"command":"   "}', method="POST", headers=hdr)
+        check("empty command refused", s == 400)
+        s, _ = call(op, url, data=b'{"nope":1}', method="POST", headers=hdr)
+        check("malformed body refused", s == 400)
+
+        # The load-bearing one: run that same rcfile for real.
+        out = typed_not_run(rc, nasty, home)
+        check("hostile command is typed, not run", not os.path.exists(vault + "/PWNED"))
+        check("hostile command arrives verbatim", nasty in re.sub(r"[\r\n]", "", out))
+        out = typed_not_run(rc, "cd /tmp\nls -la", home)
+        check("multi-line block lands as one buffer",
+              "cd /tmp" in out and "ls -la" in out and "total " not in out)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        for f in (record, record + ".rc"):
+            if os.path.exists(f):
+                os.remove(f)
+
+    p, token, _ = start(vault, port, ["--no-terminal"])
+    try:
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        s, _ = call(op, base + "/api/terminal", data=b'{"command":"echo hi"}',
+                    method="POST", headers={"Content-Type": "application/json"})
+        check("--no-terminal refuses the endpoint", s == 403)
+        s, b = call(op, base + "/api/notes")
+        check("--no-terminal hides the button", json.loads(b)["terminal"] is False)
+        check("--no-terminal launched nothing", not os.path.exists(record))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        os.environ.pop("CAIRN_TERMINAL", None)
+        os.environ.pop("CAIRN_RECORD", None)
+
 
 def main():
     if not os.path.isfile(SERVER):
@@ -316,6 +459,7 @@ def main():
         test_write(vault, 8933)
         test_path_safety(vault, 8934)
         test_tls(vault, 8935)
+        test_terminal(vault, 8936)
     finally:
         shutil.rmtree(vault, ignore_errors=True)
 

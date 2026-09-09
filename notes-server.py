@@ -57,6 +57,7 @@ import socketserver
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import webbrowser
@@ -208,6 +209,124 @@ def touch_updated(text):
     else:
         fm = fm.rstrip("\n") + "\nupdated: " + today
     return "---\n" + fm + "\n---\n" + body
+
+
+# --------------------------------------------------------------------------
+# open a terminal
+# --------------------------------------------------------------------------
+#
+# "Open in terminal" hands a code block to a real terminal window on THIS
+# machine with the command typed at the prompt but NOT executed -- the user
+# still has to read it and press Enter. Nothing here ever runs the command.
+#
+# Two things keep that promise:
+#   * the command is never handed to a shell for evaluation. It reaches bash
+#     only as an environment variable, and the rcfile below expands it with
+#     plain parameter expansion, which bash does not re-scan for syntax.
+#   * it is inserted into the readline editing buffer by a key macro, and a
+#     macro types characters; it cannot press Return on the user's behalf.
+#
+# The insertion uses an old readline trick: bind a macro to the terminal's
+# reply to a Device Status Report, then ask for one. The terminal answers
+# ESC[0n, readline sees the macro's key sequence, and types the command at the
+# first prompt. If a terminal never answers, nothing is typed and the command
+# is still one Up-arrow away in history.
+
+TERMINAL_CWD = os.path.expanduser("~/workspace")
+TERMINAL_ENABLED = True
+_TERMINAL = None                             # cached (name, flags), () for none
+
+# Emulator, then the flags meaning "start here" and "run this next". The cwd is
+# set on the spawned process too, but several emulators re-exec through a
+# launcher that would otherwise land in $HOME, so the explicit flag matters.
+TERMINALS = [
+    ("ptyxis",              ["--working-directory={cwd}", "--"]),
+    ("konsole",             ["--workdir", "{cwd}", "-e"]),
+    ("gnome-terminal",      ["--working-directory={cwd}", "--"]),
+    ("kgx",                 ["--working-directory={cwd}", "--"]),
+    ("xfce4-terminal",      ["--working-directory={cwd}", "-x"]),
+    ("kitty",               ["--directory", "{cwd}", "--"]),
+    ("alacritty",           ["--working-directory", "{cwd}", "-e"]),
+    ("foot",                ["--working-directory={cwd}", "--"]),
+    ("wezterm",             ["start", "--cwd", "{cwd}", "--"]),
+    ("tilix",               ["--working-directory={cwd}", "-e"]),
+    ("terminator",          ["--working-directory={cwd}", "-x"]),
+    ("x-terminal-emulator", ["-e"]),
+    ("xterm",               ["-e"]),
+]
+
+# Sourced by the throwaway bash session. $CAIRN_CMD is expanded but never
+# evaluated: the substitutions escape backslashes and quotes so the macro
+# definition stays well formed, and turn newlines into the readline sequence
+# for "insert a literal newline", so a multi-line block arrives as one
+# editable buffer instead of running a line at a time.
+TERMINAL_RC = r'''# written by cairn, deleted as soon as it is read
+rm -rf "$CAIRN_RC_DIR"
+[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
+[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+__cairn=${CAIRN_CMD//\\/\\\\}
+__cairn=${__cairn//\"/\\\"}
+__cairn=${__cairn//$'\n'/\\C-v\\C-j}
+bind '"\e[0n": "'"$__cairn"'"' 2>/dev/null && printf '\e[5n'
+history -s "$CAIRN_CMD"
+unset __cairn CAIRN_CMD CAIRN_RC_DIR
+'''
+
+
+def find_terminal():
+    """First installed emulator, or None. $CAIRN_TERMINAL jumps the queue."""
+    global _TERMINAL
+    if _TERMINAL is None:
+        _TERMINAL = ()
+        override = os.environ.get("CAIRN_TERMINAL")
+        table = ([(override, ["-e"])] if override else []) + TERMINALS
+        for name, flags in table:
+            if shutil.which(name):
+                _TERMINAL = (name, flags)
+                break
+    return _TERMINAL or None
+
+
+def terminal_ready():
+    return bool(TERMINAL_ENABLED and find_terminal())
+
+
+def open_terminal(command):
+    """Open a terminal at TERMINAL_CWD with `command` typed but not run."""
+    found = find_terminal()
+    if not found:
+        raise RuntimeError("no terminal emulator found on this machine")
+    name, flags = found
+    cwd = TERMINAL_CWD if os.path.isdir(TERMINAL_CWD) else os.path.expanduser("~")
+
+    # The rcfile holds no secrets, but the command is the user's business:
+    # mkdtemp is 0700, and the rcfile deletes itself the moment bash reads it.
+    # A window closed before bash got that far leaves one behind, so sweep any
+    # that are old enough to be certainly dead.
+    tmp = tempfile.gettempdir()
+    for stale in os.listdir(tmp):
+        old_dir = os.path.join(tmp, stale)
+        if stale.startswith("cairn-term-") and os.path.isdir(old_dir):
+            try:
+                if time.time() - os.path.getmtime(old_dir) > 600:
+                    shutil.rmtree(old_dir, ignore_errors=True)
+            except OSError:
+                pass
+    rc_dir = tempfile.mkdtemp(prefix="cairn-term-")
+    rc = os.path.join(rc_dir, "rc.bash")
+    with open(rc, "w", encoding="utf-8") as fh:
+        fh.write(TERMINAL_RC)
+
+    argv = [name] + [f.format(cwd=cwd) for f in flags] + ["bash", "--rcfile", rc, "-i"]
+    env = dict(os.environ, CAIRN_CMD=command, CAIRN_RC_DIR=rc_dir)
+    try:
+        subprocess.Popen(argv, cwd=cwd, env=env, start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    except OSError as e:
+        shutil.rmtree(rc_dir, ignore_errors=True)
+        raise RuntimeError("could not start %s: %s" % (name, e))
+    return name, cwd
 
 
 # --------------------------------------------------------------------------
@@ -368,6 +487,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return urllib.parse.parse_qs(
             urllib.parse.urlparse(self.path).query).get("token", [""])[0]
 
+    def is_local(self):
+        """True when the request came from this machine, not the network."""
+        host = self.client_address[0]
+        return host.startswith("127.") or host in ("::1", "::ffff:127.0.0.1")
+
     def authed(self):
         """Token gate. Also refuses cross-origin requests outright."""
         origin = self.headers.get("Origin")
@@ -429,7 +553,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.authed():
                 return self.fail(403, "not unlocked")
             return self.send_json(200, {"ok": True, "notes": list_notes(),
-                                        "images": list_images(), "vault": VAULT})
+                                        "images": list_images(), "vault": VAULT,
+                                        "terminal": terminal_ready() and self.is_local()})
 
         if path.startswith("/media/"):
             if not self.authed():
@@ -522,6 +647,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             shutil.move(full, dest)
             return self.send_json(200, {"ok": True, "trashed": os.path.relpath(dest, VAULT)})
 
+        if route == "/api/terminal":
+            # Opening a window is the one thing here that reaches outside the
+            # vault, so it is deliberately the narrowest route in the file:
+            # this machine only. A phone on the LAN is authenticated, but it
+            # is not sitting in front of the screen a window would appear on.
+            if not self.is_local():
+                return self.fail(403, "terminal windows open only on this machine")
+            if not TERMINAL_ENABLED:
+                return self.fail(403, "terminal opening is off (--no-terminal)")
+            try:
+                data = self.body_json()
+                command = data["command"]
+            except (KeyError, ValueError, json.JSONDecodeError) as e:
+                return self.fail(400, str(e))
+            if not isinstance(command, str) or not command.strip():
+                return self.fail(400, "empty command")
+            if len(command) > 8192 or "\x00" in command:
+                return self.fail(400, "command is not something to type")
+            try:
+                name, cwd = open_terminal(command)
+            except RuntimeError as e:
+                return self.fail(503, str(e))
+            self.log_message("opened %s in %s (not run)", name, cwd)
+            return self.send_json(200, {"ok": True, "terminal": name, "cwd": cwd})
+
         return self.fail(404, "no such endpoint")
 
 
@@ -547,11 +697,18 @@ def main():
                     help="path to the notes vault (default: $NOTES_VAULT, "
                          "else the folder containing this script's parent)")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--terminal-cwd", default=None,
+                    help="where 'open in terminal' starts (default: ~/workspace)")
+    ap.add_argument("--no-terminal", action="store_true",
+                    help="refuse to open terminal windows at all")
     args = ap.parse_args()
 
-    global VAULT, CERT_DIR
+    global VAULT, CERT_DIR, TERMINAL_CWD, TERMINAL_ENABLED
     if args.vault:
         VAULT = os.path.abspath(os.path.expanduser(args.vault))
+    if args.terminal_cwd:
+        TERMINAL_CWD = os.path.abspath(os.path.expanduser(args.terminal_cwd))
+    TERMINAL_ENABLED = not args.no_terminal
     CERT_DIR = os.path.join(VAULT, ".certs")
 
     if not os.path.isdir(VAULT):
@@ -600,6 +757,9 @@ def main():
             print("  Your notes and this token cross the wire unencrypted and are")
             print("  readable by anyone else on this network. Restart with --tls.\n")
     print("  Backups go to .backups/, deletes go to .trash/.")
+    if terminal_ready():
+        print("  Code blocks open in %s at %s — typed, never run."
+              % (find_terminal()[0], TERMINAL_CWD))
     print("  Ctrl-C to stop.\n")
 
     if not args.no_browser:
