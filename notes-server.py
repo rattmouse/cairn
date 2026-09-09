@@ -264,9 +264,13 @@ TERMINALS = [
 
 # The script the emulator is actually given. It exists because macOS needs a
 # file it can hand to an application, and because `cd` here means the window
-# lands in the right place whatever the emulator does with its own flags.
+# lands in the right place whatever the emulator does with its own flags. The
+# clear is macOS again: Terminal runs this file from a login shell of its own,
+# so the window opens on that shell's banner and on the echoed path of this
+# script. Wiping it leaves a window that looks like any other new one.
 LAUNCHER = """#!/bin/sh
 cd __CWD__ 2>/dev/null || cd "$HOME"
+clear 2>/dev/null
 exec __SHELL__
 """
 
@@ -282,17 +286,32 @@ exec __SHELL__
 # quotes so the macro definition stays well formed whatever the note contains,
 # and turn newlines into readline's "insert a literal newline", so a multi-line
 # block arrives as one editable buffer instead of running a line at a time.
+#
+# Which startup files to load is a question about the terminal, not the shell,
+# so it is asked of the machine rather than of $SHELL. Linux emulators open an
+# interactive non-login shell, whose files are /etc/bash.bashrc and ~/.bashrc.
+# Terminal.app opens a login shell, and a Mac has neither of those files: the
+# system one is /etc/bashrc, reached through /etc/profile where path_helper
+# builds PATH, and the user's is ~/.bash_profile. Read the wrong pair and the
+# window comes up with a bare bash-3.2 prompt and none of their PATH.
 BASH_RC = r"""# written by cairn, deleted as soon as it is read
 CAIRN_CMD=$(cat __DIR__/cmd)
 rm -rf __DIR__
-[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
-[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+if [ "$(uname)" = Darwin ]; then
+    [ -f /etc/profile ] && . /etc/profile
+    for __cairn_rc in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+        [ -f "$__cairn_rc" ] && { . "$__cairn_rc"; break; }
+    done
+else
+    [ -f /etc/bash.bashrc ] && . /etc/bash.bashrc
+    [ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+fi
 __cairn=${CAIRN_CMD//\\/\\\\}
 __cairn=${__cairn//\"/\\\"}
 __cairn=${__cairn//$'\n'/\\C-v\\C-j}
 bind '"\e[0n": "'"$__cairn"'"' 2>/dev/null && printf '\e[5n'
 history -s "$CAIRN_CMD"
-unset __cairn CAIRN_CMD
+unset __cairn __cairn_rc CAIRN_CMD
 """
 
 # zsh needs no trick: print -z pushes text onto the line editor's buffer stack

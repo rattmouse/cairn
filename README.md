@@ -62,7 +62,11 @@ cannot press Return for you, and under zsh by `print -z`. So a code block full
 of quotes and semicolons arrives as text rather than as instructions.
 Multi-line blocks land as one editable buffer.
 
-`$SHELL` decides which — a Mac gets zsh, not a surprise bash prompt.
+`$SHELL` decides which — a Mac on the stock shell gets zsh, not a surprise
+bash prompt. Either way the window is yours: it reads the startup files your
+terminal would have read, so your prompt, your `PATH` and your aliases are
+all there. (Which files those are is a question about the terminal, not the
+shell: Terminal.app opens a login shell, Linux emulators do not.)
 
 On Linux the first installed emulator wins, in roughly desktop-native order
 (`konsole`, `gnome-terminal`, `kitty`, `alacritty`, … down to `xterm`). On

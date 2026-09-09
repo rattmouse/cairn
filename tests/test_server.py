@@ -419,6 +419,14 @@ def test_terminal(vault, port):
           == ["konsole", "--workdir", "/home/u", "-e", "/tmp/t/launch"])
     rc_name = mod.shell_parts()[0]                      # "rc.bash" or ".zshrc"
 
+    # The window has to come up as the user's own, which means reading the file
+    # the platform's terminal would have read. A Mac running bash keeps its
+    # prompt and its PATH in ~/.bash_profile, never in the ~/.bashrc a Linux
+    # emulator reads. Marking that file proves the right one was loaded.
+    user_rc = ".zshrc" if rc_name == ".zshrc" else (".bash_profile" if mac else ".bashrc")
+    with open(os.path.join(home, user_rc), "w") as f:
+        f.write("PS1='cairn-prompt$ '\n")
+
     p, token, _ = start(vault, port, ["--terminal-cwd", vault])
     try:
         op, _ = client()
@@ -465,6 +473,7 @@ def test_terminal(vault, port):
         check("hostile command is typed, not run", not os.path.exists(vault + "/PWNED"))
         check("hostile command arrives verbatim", nasty in re.sub(r"[\r\n]", "", out))
         check("the shell cleaned up after itself", not os.path.isdir(os.path.dirname(launcher)))
+        check("the window loads the user's own " + user_rc, "cairn-prompt$" in out)
 
         s, _, launcher, _ = launch(op, url, "cd /tmp\nls -la", record)
         out = typed_not_run(launcher, home)
