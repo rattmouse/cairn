@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -399,6 +400,113 @@ def test_tls(vault, port):
         p.terminate(); p.wait(timeout=5)
 
 
+def san(cert):
+    """subjectAltName entries of a cert on disk, in openssl's display form.
+
+    Parsed here rather than by importing the server's own parser, so that a
+    bug in that parser cannot make these checks agree with it.
+    """
+    out = subprocess.run(["openssl", "x509", "-in", cert, "-noout",
+                          "-ext", "subjectAltName"],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         text=True).stdout
+    # Drop the "X509v3 Subject Alternative Name:" header the values follow.
+    out = out.split("Name:", 1)[-1]
+    return {p.strip() for p in out.replace("\n", " ").split(",") if ":" in p}
+
+
+def server_fn(name, *args):
+    """Call one function from notes-server.py in a fresh interpreter.
+
+    The module has a hyphen in its name and starts a server at import time
+    only under __main__, so importlib is both necessary and safe here.
+    """
+    code = ("import importlib.util as u;"
+            "s=u.spec_from_file_location('ns',%r);m=u.module_from_spec(s);"
+            "s.loader.exec_module(m);print(repr(m.%s(*%r)))" % (SERVER, name, args))
+    return eval(subprocess.run([sys.executable, "-c", code],
+                               stdout=subprocess.PIPE, text=True).stdout.strip())
+
+
+def test_cert_names(vault, port):
+    print("\ntls certificate names")
+    if not shutil.which("openssl"):
+        print("  (skipped: openssl not on PATH)")
+        return
+
+    # An explicit --state-dir so the cert's path is known before the server
+    # has printed its banner.
+    sd = tempfile.mkdtemp(prefix="cairn-test-certstate-", dir=STATE)
+    certs = os.path.join(sd, "certs")
+    cert = os.path.join(certs, "server.crt")
+    tls = ["--lan", "--tls", "--state-dir", sd]
+
+    # A VPN tunnel and a libvirt bridge are both addresses this machine really
+    # has and neither is one another device can reach. Pinning the cert to one
+    # is the bug this whole test exists for.
+    every = server_fn("enumerate_ipv4")
+    offered = server_fn("lan_ips")
+    check("enumerates more than loopback", any(i != "lo" for i, _ in every)
+          or not every, str(every))
+    check("loopback is never offered as a lan address",
+          not [a for a in offered if a.startswith("127.")], str(offered))
+    virtual = [ip for i, ip in every
+               if i.startswith(("virbr", "vnet", "docker", "veth", "br-",
+                                "tun", "tap", "wg", "proton", "utun"))
+               and not ip.startswith("127.")]
+    check("virtual and tunnel interfaces are excluded",
+          not (set(virtual) & set(offered)),
+          "virtual=%s offered=%s" % (virtual, offered))
+
+    shutil.rmtree(certs, ignore_errors=True)
+    p, token, log = start(vault, port, tls)
+    try:
+        got = san(cert)
+        check("cert covers loopback", "IP Address:127.0.0.1" in got, str(got))
+        check("cert covers localhost", "DNS:localhost" in got, str(got))
+        host = socket.gethostname().split(".")[0]
+        check("cert covers the mDNS name", "DNS:%s.local" % host in got, str(got))
+        check("cert covers no tunnel or bridge address",
+              not {"IP Address:%s" % ip for ip in virtual} & got,
+              "virtual=%s san=%s" % (virtual, got))
+        for ip in offered:
+            check("cert covers the real lan address %s" % ip,
+                  "IP Address:%s" % ip in got, str(got))
+        check("banner offers the mDNS url", ".local:%d" % port in log)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # The cache-forever bug: a cert that no longer covers this machine used to
+    # be reused verbatim, so a VPN-pinned cert stayed broken across restarts.
+    before = open(cert).read()
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                    "-keyout", os.path.join(certs, "server.key"), "-out", cert,
+                    "-days", "1", "-subj", "/CN=notes-server",
+                    "-addext", "subjectAltName=IP:203.0.113.9"],
+                   check=True, capture_output=True)
+    p, token, log = start(vault, port + 1, tls)
+    try:
+        check("regenerates a cert that stopped fitting", "regenerating" in log)
+        check("says the old trust is void", "trust this one" in log)
+        got = san(cert)
+        check("the replacement covers loopback again",
+              "IP Address:127.0.0.1" in got, str(got))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # A cert that already fits must be left alone -- regenerating on every
+    # start would void the trust the user set up on each device.
+    kept = open(cert).read()
+    p, token, log = start(vault, port + 2, tls)
+    try:
+        check("a cert that still fits is reused",
+              open(cert).read() == kept and "regenerating" not in log,
+              "unchanged=%s regenerated=%s" % (open(cert).read() == kept,
+                                               "regenerating" in log))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+
 def test_sync(vault, port):
     print("\nsync command")
 
@@ -726,6 +834,7 @@ def main():
         test_write(vault, 8933)
         test_path_safety(vault, 8934)
         test_tls(vault, 8935)
+        test_cert_names(vault, 8950)
         test_terminal(vault, 8936)
         test_sync(vault, 8937)
     finally:
