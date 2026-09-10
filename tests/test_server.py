@@ -26,14 +26,15 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "notes-server.py")
 
 PASS, FAIL = [], []
 
-# Every server in these tests gets $XDG_STATE_HOME pointed here, so backups,
-# trash, certs and sync.json never land in the real ~/.local/state/cairn.
+# Every server in these tests gets $XDG_STATE_HOME pointed here, so trash,
+# certs and the backup record never land in the real ~/.local/state/cairn.
 STATE = None
 
 
@@ -636,8 +637,8 @@ def test_git(vault, port):
 
         branch = git(vault, "rev-parse", "--abbrev-ref", "HEAD")
         check("the vault is a repository", os.path.isdir(os.path.join(vault, ".git")))
-        check("checked out on a branch named for this machine",
-              branch.startswith("host/"), branch)
+        check("checked out on the branch the notes live on",
+              branch == "main", branch)
         check("the branch is announced", "branch: " + branch in log, branch)
         check("the tree agrees with HEAD at startup",
               git(vault, "status", "--porcelain") == "",
@@ -818,9 +819,24 @@ def test_git(vault, port):
           all(isinstance(a, tuple) and "shell" not in str(a) for a in seen))
 
 
-def test_sync(vault, port):
-    """Sync: this machine's branch out, the other machines' branches in."""
-    print("\nsync")
+def notes_of(op, base):
+    return json.loads(call(op, base + "/api/notes")[1])
+
+
+def put(op, url, path, content, **extra):
+    body = dict(extra, path=path, content=content)
+    return call(op, url + "/api/note", data=json.dumps(body).encode(),
+                method="PUT", headers={"Content-Type": "application/json"})
+
+
+def test_clients(vault, port):
+    """A branch per browser, and a save that merges instead of refusing.
+
+    This is the pull request cairn opens and closes behind a save: two
+    browsers hold the same note, one lands first, and the second is merged
+    against it — or handed back the hunks that clash, having written nothing.
+    """
+    print("\nclients and merging")
 
     if not shutil.which("git"):
         check("git is installed to test against", False, "skipped")
@@ -828,162 +844,275 @@ def test_sync(vault, port):
 
     state = tempfile.mkdtemp(prefix="cairn-test-state-")
     env = dict(os.environ, XDG_STATE_HOME=state)
-
-    # --- off, and refused, until there is somewhere to sync to ---------
     p, token, _ = start(vault, port, env=env)
     try:
-        op, _ = client()
         base = "http://127.0.0.1:%d" % port
-        code, _ = call(op, base + "/api/sync", data=b"", method="POST")
-        check("POST /api/sync refused when locked", code == 403, code)
-        code, _ = call(op, base + "/api/sync/status")
-        check("sync status refused when locked", code == 403, code)
-        form(op, base, token)
-        code, body = call(op, base + "/api/sync", data=b"", method="POST")
-        check("POST /api/sync is 404 with no origin remote", code == 404, code)
-        check("and says why", "origin" in body, body[:80])
-        code, body = call(op, base + "/api/sync/status")
-        st = json.loads(body)["sync"]
-        check("status reports sync disabled with no origin", st["enabled"] is False)
-        check("but still names the branch it would push",
-              (st["branch"] or "").startswith("host/"), st.get("branch"))
-    finally:
-        p.terminate(); p.wait(timeout=5)
+        alice, ajar = client()
+        bob, bjar = client()
+        form(alice, base, token)
+        form(bob, base, token)
 
-    # --- a bare repository is the transport ----------------------------
-    home = tempfile.mkdtemp(prefix="cairn-test-remote-")
-    bare = os.path.join(home, "notes.git")
-    subprocess.run(("git", "init", "-q", "--bare", bare),
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    git(vault, "remote", "add", "origin", bare)
+        check("each browser is given a client id",
+              bool(ajar.get("cairn_client")) and bool(bjar.get("cairn_client"))
+              and ajar["cairn_client"] != bjar["cairn_client"],
+              (ajar.get("cairn_client"), bjar.get("cairn_client")))
 
-    p, token, _ = start(vault, port, env=env)
-    try:
-        op, _ = client()
-        base = "http://127.0.0.1:%d" % port
-        form(op, base, token)
-        branch = git(vault, "rev-parse", "--abbrev-ref", "HEAD")
+        a = notes_of(alice, base)
+        b = notes_of(bob, base)
+        head = a["head"]
+        check("reading the vault reports the commit it was read at",
+              re.fullmatch(r"[0-9a-f]{40}", head or ""), head)
+        branches = git(vault, "for-each-ref", "--format=%(refname:short)",
+                       "refs/heads/client").split()
+        check("and gives that browser a branch of its own",
+              any(n.endswith(ajar["cairn_client"][:8]) for n in branches)
+              and any(n.endswith(bjar["cairn_client"][:8]) for n in branches),
+              " ".join(branches[:4]))
 
-        # The request body is attacker-shaped. Nothing in it can reach git:
-        # every command is a fixed argv list built here, not there.
-        payload = json.dumps({"cmd": "rm -rf /", "branch": "; touch /tmp/pwned",
-                              "args": ["--force"]}).encode()
-        code, body = call(op, base + "/api/sync", data=payload, method="POST",
-                          headers={"Content-Type": "application/json"})
-        rec = json.loads(body)["sync"] if code == 200 else {}
-        check("a sync with a remote runs", code == 200 and rec.get("ok") is True,
-              rec.get("output", code))
-        check("nothing from the request reaches git",
-              not os.path.exists("/tmp/pwned")
-              and "rm -rf" not in rec.get("output", ""))
-        check("this machine's branch is on the remote",
-              branch in subprocess.run(("git", "-C", bare, "branch", "--list"),
-                                       stdout=subprocess.PIPE, text=True).stdout,
-              branch)
-        check("the run is recorded", json.loads(
-            call(op, base + "/api/sync/status")[1])["sync"]["last"]["ok"] is True)
+        st = json.loads(call(alice, base + "/api/status")[1])
+        check("a client is told which branch is its own",
+              (st["clients"]["branch"] or "").startswith("client/"),
+              st["clients"].get("branch"))
+        check("and that the other browser is here too",
+              st["clients"]["count"] == 2 and len(st["clients"]["others"]) == 1,
+              st["clients"])
 
-        # --- another machine's branch is merged back ------------------
-        peer = os.path.join(home, "peer")
-        subprocess.run(("git", "clone", "-q", bare, peer),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        git_init_peer = (("config", "user.email", "p@example.com"),
-                         ("config", "user.name", "Peer"),
-                         ("checkout", "-q", "-b", "host/other", "origin/" + branch))
-        for args in git_init_peer:
-            git(peer, *args)
-        note = os.path.join(peer, "Notes", "Shared.md")
-        os.makedirs(os.path.dirname(note), exist_ok=True)
-        with open(note, "w") as f:
-            f.write("# Shared\n\nfrom the other machine\n")
-        git(peer, "add", "-A")
-        git(peer, "commit", "-qm", "Add Shared")
-        git(peer, "push", "-q", "origin", "host/other")
+        # --- two edits to one note, in different places ----------------
+        note = next(n for n in a["notes"] if n["title"] == "Alpha")
+        mine = next(n for n in b["notes"] if n["path"] == note["path"])
+        first = note["raw"].replace("Body text.", "Body text, says Alice.")
+        code, body = put(alice, base, note["path"], first, base=head, stamp=False)
+        check("the first save lands", code == 200, code)
 
-        code, body = call(op, base + "/api/sync", data=b"", method="POST")
-        rec = json.loads(body)["sync"]
-        check("a peer's branch is merged in", rec["ok"] is True
-              and os.path.isfile(os.path.join(vault, "Notes", "Shared.md")),
-              rec["output"][-200:])
-        check("the merge is pushed back",
-              subprocess.run(("git", "-C", bare, "log", "-1", "--format=%s", branch),
-                             stdout=subprocess.PIPE, text=True).stdout.strip() ==
+        st = json.loads(call(bob, base + "/api/status")[1])
+        check("the other browser is told the notes moved under it",
+              st["clients"]["behind"] == 1
+              and note["path"] in (st["clients"].get("changed") or []),
+              st["clients"])
+
+        # Far apart in the file: git merges hunks, and two edits on adjacent
+        # lines are one hunk however different they look to a person.
+        second = mine["raw"] + "\nAdded by Bob.\n"
+        code, body = put(bob, base, note["path"], second, base=head, stamp=False)
+        r = json.loads(body)
+        text = open(os.path.join(vault, note["path"]), encoding="utf-8").read()
+        check("a stale save is merged, not refused", code == 200, code)
+        check("and says that it merged", r.get("merged") is True, r.get("merged"))
+        check("both edits are in the note on disk",
+              "says Alice" in text and "Added by Bob" in text, text[-80:])
+        check("the merge is one ordinary commit",
+              git(vault, "log", "-1", "--format=%s") == "Update Alpha",
               git(vault, "log", "-1", "--format=%s"))
-        code, body = call(op, base + "/api/status")
-        check("the footer is told how many other machines there are",
-              json.loads(body)["sync"]["peers"] == 1, json.loads(body)["sync"]["peers"])
-
-        # --- the later writer wins, whichever machine that is ---------
-        # The peer writes, then this machine writes. Merging with -X theirs
-        # would hand it to the peer; ordering is what makes it the later one.
-        conflict = "Notes/Shared.md"
-        with open(os.path.join(peer, conflict), "w") as f:
-            f.write("# Shared\n\nPEER WROTE THIS\n")
-        git(peer, "commit", "-qam", "Update Shared")
-        git(peer, "push", "-q", "origin", "host/other")
-        time.sleep(1.1)                       # commit times are whole seconds
-        listing = json.loads(call(op, base + "/api/notes")[1])["notes"]
-        shared = next(n for n in listing if n["path"].endswith("Shared.md"))
-        call(op, base + "/api/note",
-             data=json.dumps({"path": shared["path"],
-                              "content": "# Shared\n\nTHIS MACHINE WROTE THIS\n",
-                              "mtime": shared["mtime"], "stamp": False}).encode(),
-             method="PUT", headers={"Content-Type": "application/json"})
-        code, body = call(op, base + "/api/sync", data=b"", method="POST")
-        rec = json.loads(body)["sync"]
-        text = open(os.path.join(vault, conflict), encoding="utf-8").read()
-        check("this machine wrote last, so this machine's line survives",
-              rec["ok"] is True and "THIS MACHINE" in text, text.strip()[-60:])
-        check("and the losing version is still in the history",
-              "PEER WROTE THIS" in git(vault, "log", "-p", "--all"))
-
-        # Now the other way round: the peer writes after this machine.
-        time.sleep(1.1)
-        with open(os.path.join(peer, conflict), "w") as f:
-            f.write("# Shared\n\nPEER WROTE THIS LAST\n")
-        git(peer, "fetch", "-q", "origin")
-        git(peer, "merge", "-q", "--no-edit", "-X", "ours", "origin/" + branch)
-        with open(os.path.join(peer, conflict), "w") as f:
-            f.write("# Shared\n\nPEER WROTE THIS LAST\n")
-        git(peer, "commit", "-qam", "Update Shared")
-        git(peer, "push", "-q", "origin", "host/other")
-        code, body = call(op, base + "/api/sync", data=b"", method="POST")
-        rec = json.loads(body)["sync"]
-        text = open(os.path.join(vault, conflict), encoding="utf-8").read()
-        check("the peer wrote last, so the peer's line survives",
-              rec["ok"] is True and "PEER WROTE THIS LAST" in text, text.strip()[-60:])
-
-        # --- the transcript reaches the activity panel ----------------
-        code, body = call(op, base + "/api/run/log?since=0")
-        lines = [l["text"] for l in json.loads(body)["lines"]]
-        check("the activity panel sees the git commands",
-              any(l.startswith("git push") for l in lines)
-              and any(l.startswith("git fetch") for l in lines), lines[:3])
-        check("and a line for the run finishing",
-              any("finished in" in l for l in lines))
-    finally:
-        p.terminate(); p.wait(timeout=5)
-
-    # --- a sync that cannot reach its remote is reported, not swallowed
-    git(vault, "remote", "set-url", "origin", os.path.join(home, "gone.git"))
-    p, token, _ = start(vault, port, env=env)
-    try:
-        op, _ = client()
-        base = "http://127.0.0.1:%d" % port
-        form(op, base, token)
-        code, body = call(op, base + "/api/sync", data=b"", method="POST")
-        rec = json.loads(body)["sync"]
-        check("a failing sync still answers 200", code == 200, code)
-        check("a failing sync is marked not ok", rec["ok"] is False)
-        check("its output is kept for the user", "gone.git" in rec["output"],
-              rec["output"][-120:])
-        check("the vault is left on its own branch, clean",
+        check("the history says which browser made it",
+              "Client: " in git(vault, "log", "-1", "--format=%b"),
+              git(vault, "log", "-1", "--format=%b").strip()[:40])
+        check("and the tree is left clean",
               git(vault, "status", "--porcelain") == "",
               git(vault, "status", "--porcelain"))
+
+        # --- the same line, from both sides ----------------------------
+        head = notes_of(alice, base)["head"]
+        notes_of(bob, base)
+        line = "This line is contested.\n"
+        put(alice, base, note["path"], text + line, base=head, stamp=False)
+        was = open(os.path.join(vault, note["path"]), encoding="utf-8").read()
+        code, body = put(bob, base, note["path"],
+                         text + "Bob says something else entirely.\n",
+                         base=head, stamp=False)
+        r = json.loads(body)
+        now = open(os.path.join(vault, note["path"]), encoding="utf-8").read()
+        check("a hunk both sides changed answers 409", code == 409, code)
+        conflict = r.get("conflict") or {}
+        check("nothing is written when it does", now == was)
+        check("no commit is made either",
+              git(vault, "log", "-1", "--format=%s") == "Update Alpha"
+              and "something else entirely" not in git(vault, "log", "-p", "-1"))
+        check("both versions come back", "contested" in (conflict.get("vault") or "")
+              and "else entirely" in (conflict.get("yours") or ""))
+        clashes = [s for s in conflict.get("segments", []) if s["kind"] == "clash"]
+        check("with the hunks split out for the editor", len(clashes) == 1, clashes)
+        check("each side of the hunk named separately",
+              "else entirely" in clashes[0]["yours"]
+              and "contested" in clashes[0]["vault"], clashes[0] if clashes else None)
+        check("and the commit to resolve against",
+              conflict.get("head") == git(vault, "rev-parse", "HEAD"))
+
+        # Resolving is an ordinary save on top of what it conflicted with.
+        resolved = was.replace(line, "Both of us agreed on this.\n")
+        code, body = put(bob, base, note["path"], resolved,
+                         base=conflict["head"], stamp=False)
+        check("a resolution saves like any other edit", code == 200, code)
+        check("and is what is on disk",
+              "Both of us agreed" in
+              open(os.path.join(vault, note["path"]), encoding="utf-8").read())
+
+        # --- a client with no cookie is served exactly as before -------
+        plain, _ = client()
+        code, body = call(plain, base + "/api/notes",
+                          headers={"X-Notes-Token": token})
+        check("a request with no client id still works", code == 200, code)
+        check("it just gets no branch",
+              json.loads(call(plain, base + "/api/status",
+                              headers={"X-Notes-Token": token})[1])
+              ["clients"]["branch"] is None)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        shutil.rmtree(state, ignore_errors=True)
+
+
+def test_backup(vault, port):
+    """Backups: a zip and a bundle written somewhere else, and the drift
+    between the last one and now."""
+    print("\nbackups")
+
+    if not shutil.which("git"):
+        check("git is installed to test against", False, "skipped")
+        return
+
+    state = tempfile.mkdtemp(prefix="cairn-test-state-")
+    env = dict(os.environ, XDG_STATE_HOME=state)
+    base = "http://127.0.0.1:%d" % port
+
+    # --- off until there is somewhere to put them ----------------------
+    p, token, _ = start(vault, port, env=env)
+    try:
+        op, _ = client()
+        code, _ = call(op, base + "/api/backup", data=b"", method="POST")
+        check("POST /api/backup refused when locked", code == 403, code)
+        form(op, base, token)
+        code, body = call(op, base + "/api/backup", data=b"", method="POST")
+        check("POST /api/backup is 404 with no backup directory", code == 404, code)
+        check("and says what to pass", "--backup-dir" in body, body[:80])
+        st = json.loads(call(op, base + "/api/status")[1])["backup"]
+        check("status reports backups off", st["enabled"] is False)
     finally:
         p.terminate(); p.wait(timeout=5)
 
-    git(vault, "remote", "remove", "origin")
+    # --- a folder outside the vault, named the way Proton Drive names one
+    home = tempfile.mkdtemp(prefix="cairn-test-backup-")
+    cloud = os.path.join(home, "ProtonDrive-someone@proton.me-folder")
+    dest = os.path.join(cloud, "cairn-backups")
+    os.makedirs(dest)
+
+    p, token, log = start(vault, port, env=env,
+                          extra=["--backup-dir", dest, "--backup-every", "0"])
+    try:
+        op, _ = client()
+        form(op, base, token)
+        check("the banner says where backups go", dest in log, log[-200:])
+
+        st = json.loads(call(op, base + "/api/status")[1])["backup"]
+        check("status reports backups on", st["enabled"] is True and st["present"])
+        check("and names the provider holding them",
+              st["provider"] == "Proton Drive", st.get("provider"))
+        check("with nothing backed up yet", st["last"] is None, st.get("last"))
+
+        # Attacker-shaped body: nothing in it can reach a command, and nothing
+        # in it can choose where a copy of the whole vault is written.
+        payload = json.dumps({"dir": "/tmp/pwned-backup", "cmd": "rm -rf /",
+                              "args": ["--force"]}).encode()
+        code, body = call(op, base + "/api/backup", data=payload, method="POST",
+                          headers={"Content-Type": "application/json"})
+        rec = json.loads(body).get("backup", {}) if code == 200 else {}
+        check("a backup runs", code == 200 and rec.get("ok") is True,
+              rec.get("error", code))
+        check("nothing from the request reaches it",
+              not os.path.exists("/tmp/pwned-backup"))
+
+        names = sorted(os.listdir(dest))
+        check("it writes a zip, a bundle and a manifest",
+              len([n for n in names if n.endswith(".zip")]) == 1
+              and len([n for n in names if n.endswith(".bundle")]) == 1
+              and len([n for n in names if n.endswith(".json")]) == 1, names)
+        check("nothing half-written is left behind",
+              all(not n.startswith("cairn-backup-") for n in names), names)
+
+        zip_path = os.path.join(dest, next(n for n in names if n.endswith(".zip")))
+        with zipfile.ZipFile(zip_path) as z:
+            inside_zip = z.namelist()
+        check("the zip holds the notes",
+              any(n.endswith("Notes/Alpha.md") for n in inside_zip),
+              inside_zip[:3])
+        check("and the attachments beside them",
+              any(n.endswith("attachments/pic.png") for n in inside_zip))
+        check("but not the git directory, which the bundle carries properly",
+              not any("/.git/" in n for n in inside_zip))
+
+        # The bundle is the half that still has every version in it.
+        bundle = os.path.join(dest, next(n for n in names if n.endswith(".bundle")))
+        restored = os.path.join(home, "restored")
+        r = subprocess.run(("git", "clone", "-q", bundle, restored),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        check("the bundle restores with a plain git clone",
+              r.returncode == 0 and os.path.isfile(os.path.join(restored, "README.md")),
+              r.stdout.strip()[-120:])
+        check("with the history in it",
+              len(git(restored, "log", "--format=%h").split()) > 1)
+
+        st = json.loads(call(op, base + "/api/status")[1])["backup"]
+        check("the backup is reported as the last one",
+              st["last"] and st["last"]["ok"] is True, st.get("last"))
+        check("taken at the commit the vault was on",
+              st["last"]["commit"] == git(vault, "rev-parse", "HEAD"))
+        check("with nothing changed since", st["since"]["commits"] == 0
+              and st["since"]["notes"] == 0, st.get("since"))
+        check("no next backup when the schedule is off", st["next"] is None,
+              st.get("next"))
+
+        # --- drift is measured from that commit, not from a clock ------
+        listing = notes_of(op, base)
+        note = next(n for n in listing["notes"] if n["title"] == "Alpha")
+        put(op, base, note["path"], note["raw"] + "\nsomething new\n",
+            base=listing["head"], stamp=False)
+        st = json.loads(call(op, base + "/api/status")[1])["backup"]
+        check("a save since the backup shows up as drift",
+              st["since"]["commits"] == 1 and st["since"]["notes"] == 1,
+              st.get("since"))
+
+        code, body = call(op, base + "/api/run/log?since=0")
+        texts = [l["text"] for l in json.loads(body)["lines"]]
+        check("the activity panel sees the backup",
+              any(l.startswith("backup to ") for l in texts)
+              and any("git bundle create" in l for l in texts), texts[:3])
+        check("and a line for it finishing",
+              any(l.startswith("backup finished") for l in texts))
+
+        check("the record is kept per vault",
+              os.path.isfile(os.path.join(state_dir(log), "backup.json")))
+        check("not in one file shared by every vault",
+              not os.path.isfile(os.path.join(state, "cairn", "backup.json")))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # --- a backup that cannot be written is reported, not swallowed ----
+    gone = os.path.join(home, "unwritable")
+    os.makedirs(gone)
+    os.chmod(gone, 0o500)
+    p, token, _ = start(vault, port, env=env,
+                        extra=["--backup-dir", os.path.join(gone, "here")])
+    try:
+        op, _ = client()
+        form(op, base, token)
+        code, body = call(op, base + "/api/backup", data=b"", method="POST")
+        rec = json.loads(body).get("backup", {}) if code == 200 else {}
+        check("a failing backup still answers 200", code == 200, code)
+        check("and is marked not ok", rec.get("ok") is False, rec)
+        check("with the reason kept for the user",
+              "cannot write" in (rec.get("error") or ""), rec.get("error"))
+        st = json.loads(call(op, base + "/api/status")[1])["backup"]
+        check("which the footer is told about", bool(st["error"]), st.get("error"))
+        check("and it has still never had a backup", st["last"] is None)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        os.chmod(gone, 0o700)
+
+    # --- the vault and its backups must not be inside one another ------
+    p, _, log = start(vault, port, env=env,
+                      extra=["--backup-dir", os.path.join(vault, "backups")])
+    p.wait(timeout=10)
+    check("a backup directory inside the vault is refused",
+          p.returncode != 0 and "inside one another" in log, log.strip()[-120:])
+
     shutil.rmtree(home, ignore_errors=True)
     shutil.rmtree(state, ignore_errors=True)
 
@@ -1012,22 +1141,22 @@ def test_status(vault, port):
         code, body = call(op, base + "/api/status")
         st = json.loads(body) if code == 200 else {}
         check("/api/status answers", code == 200, code)
-        check("it carries all three sections",
-              all(k in st for k in ("sync", "git", "cloud")))
+        check("it carries every section the footer draws",
+              all(k in st for k in ("git", "vault", "backup", "clients")), list(st))
         check("and the version the page shows in its footer",
               re.match(r"^\d+\.\d+\.\d+$", st.get("version") or ""), st.get("version"))
         # cairn made this a repository itself at startup. The temp vault is
-        # still nobody's sync folder, and saying so is the point -- a missing
-        # key would leave the footer unable to tell absent from broken.
+        # still nobody's provider folder, and saying so is the point -- a
+        # missing key would leave the footer unable to tell absent from broken.
         check("git reports the repository cairn keeps",
               st.get("git", {}).get("repo") is True, st.get("git"))
-        check("on this machine's branch",
-              (st.get("git", {}).get("branch") or "").startswith("host/"),
+        check("on the branch the notes live on",
+              st.get("git", {}).get("branch") == "main",
               st.get("git", {}).get("branch"))
-        check("with no origin, so no sync",
-              st["git"]["remote"] is None and st["sync"]["enabled"] is False)
-        check("no sync folder is detected",
-              st.get("cloud", {}).get("detected") is False, st.get("cloud"))
+        check("the vault is where it should be, on this machine",
+              st["vault"]["in_provider"] is False
+              and st["vault"]["path"] == vault, st.get("vault"))
+        check("with no backups configured", st["backup"]["enabled"] is False)
 
         code, body = call(op, base + "/api/run/log")
         log = json.loads(body)
@@ -1037,28 +1166,29 @@ def test_status(vault, port):
         p.terminate(); p.wait(timeout=5)
 
     # --- a run is visible while it is still going ----------------------
-    # A pre-commit hook that sleeps is the honest way to hold a sync open:
-    # the run really is in flight, and the panel really is being polled.
-    home = tempfile.mkdtemp(prefix="cairn-test-remote-")
-    bare = os.path.join(home, "notes.git")
-    subprocess.run(("git", "init", "-q", "--bare", bare),
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    git(vault, "remote", "add", "origin", bare)
+    # A pre-commit hook that sleeps is the honest way to hold a run open: the
+    # backup really is in flight, and the panel really is being polled. The
+    # hook fires because a backup of a vault someone edited outside cairn
+    # commits that first.
+    home = tempfile.mkdtemp(prefix="cairn-test-backup-")
+    dest = os.path.join(home, "backups")
     hook = os.path.join(vault, ".git", "hooks", "pre-commit")
     with open(hook, "w") as f:
         f.write("#!/bin/sh\nsleep 3\n")
     os.chmod(hook, 0o755)
     with open(os.path.join(vault, "Notes", "Slow.md"), "w") as f:
-        f.write("# Slow\n\nSomething for the sync to commit.\n")
+        f.write("# Slow\n\nSomething for the startup commit to chew on.\n")
 
-    p, token, log = start(vault, port, env=env)
+    p, token, log = start(vault, port, env=env,
+                          extra=["--backup-dir", dest, "--backup-every", "0"])
     where = state_dir(log)
     try:
         op, _jar = client()
         base = "http://127.0.0.1:%d" % port
         form(op, base, token)
         # Startup adopted the dirty tree through the slow hook already; make
-        # it dirty again so the sync itself has something to commit.
+        # it dirty again so the backup itself has something to commit, which
+        # is what holds the run open long enough to watch it.
         with open(os.path.join(vault, "Notes", "Slow.md"), "a") as f:
             f.write("\nAnd another line.\n")
 
@@ -1067,7 +1197,7 @@ def test_status(vault, port):
         def press():
             op2, _ = client()
             form(op2, base, token)
-            done.append(call(op2, base + "/api/sync", data=b"", method="POST"))
+            done.append(call(op2, base + "/api/backup", data=b"", method="POST"))
 
         t = threading.Thread(target=press)
         t.start()
@@ -1078,22 +1208,22 @@ def test_status(vault, port):
             r = json.loads(body)
             seen = [l["text"] for l in r["lines"]]
             running = running or r["running"]
-            if any("sync on host/" in l for l in seen):
+            if any(l.startswith("backup to ") for l in seen):
                 break
             time.sleep(0.2)
 
-        check("the first line arrives before the sync ends",
-              any("sync on host/" in l for l in seen) and not done,
+        check("the first line arrives before the run ends",
+              any(l.startswith("backup to ") for l in seen) and not done,
               "lines=%s finished=%s" % (seen[:2], bool(done)))
         check("a run in flight is reported as running", running)
-        t.join(timeout=40)
+        t.join(timeout=60)
 
         code, body = call(op, base + "/api/run/log?since=0")
         r = json.loads(body)
         texts = [l["text"] for l in r["lines"]]
         kinds = [l["kind"] for l in r["lines"]]
         check("the whole transcript is in the log",
-              any(l.startswith("git push") for l in texts), texts[:3])
+              any("git bundle create" in l for l in texts), texts[:3])
         check("the run opens the log", kinds and kinds[0] == "start", kinds[:1])
         check("the run is marked finished", "end" in kinds, kinds)
         check("nothing is running afterwards", r["running"] is False)
@@ -1108,24 +1238,17 @@ def test_status(vault, port):
 
         code, body = call(op, base + "/api/status")
         check("the finished run reaches /api/status",
-              json.loads(body)["sync"]["last"]["ok"] is True)
-
-        # One shared file would mean a failed sync of one vault showing up in
-        # another vault's footer.
-        check("the record is kept per vault",
-              os.path.isfile(os.path.join(where, "sync.json")), where)
-        check("not in one file shared by every vault",
-              not os.path.isfile(os.path.join(state, "cairn", "sync.json")))
+              json.loads(body)["backup"]["last"]["ok"] is True)
     finally:
         p.terminate(); p.wait(timeout=5)
         os.remove(hook)
-        git(vault, "remote", "remove", "origin")
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(state, ignore_errors=True)
 
 
 def test_status_in_repo(vault, port):
-    """A vault inside a provider's sync folder, with a history of its own."""
+    """A vault with a history of its own — inside a provider's folder, which
+    is the arrangement this version of cairn exists to warn about."""
     print("\nstatus in a repo")
 
     if not shutil.which("git"):
@@ -1152,7 +1275,7 @@ def test_status_in_repo(vault, port):
     with open(os.path.join(repo, "Fresh.md"), "w") as f:
         f.write("# Fresh\n")
 
-    p, token, _ = start(repo, port)
+    p, token, log = start(repo, port)
     try:
         op, _jar = client()
         base = "http://127.0.0.1:%d" % port
@@ -1161,8 +1284,8 @@ def test_status_in_repo(vault, port):
 
         g = st["git"]
         check("the repository is found", g["repo"] is True)
-        check("cairn moved it onto a branch of its own",
-              (g["branch"] or "").startswith("host/"), g.get("branch"))
+        check("the branch it was already on is left alone",
+              g["branch"] == "main", g.get("branch"))
         check("the existing history is still there",
               "First note" in git(repo, "log", "--format=%s"))
         check("the edits made outside cairn were adopted",
@@ -1173,19 +1296,22 @@ def test_status_in_repo(vault, port):
               g.get("last"))
         check("there is no upstream to be ahead of", g["upstream"] is None)
 
-        c = st["cloud"]
-        check("the sync folder is detected", c["detected"] is True)
-        check("the provider is named", c["provider"] == "Proton Drive", c.get("provider"))
-        check("the account is read off the folder",
-              c["account"] == "someone@proton.me", c.get("account"))
-        check("the folder is there", c["present"] is True)
-        check("where the vault sits inside it", c["inside"] == "vault", c.get("inside"))
+        v = st["vault"]
+        check("a vault inside a provider's folder is noticed",
+              v["in_provider"] is True, v)
+        check("and the provider is named", v["provider"] == "Proton Drive",
+              v.get("provider"))
+        check("the banner says so loudly", "the vault is inside Proton Drive" in log,
+              log.strip()[-300:])
+        check("and says which way round it should be",
+              "back it up there instead" in log)
     finally:
         p.terminate(); p.wait(timeout=5)
 
     # --- a vault below a repository's root is refused -------------------
-    # cairn commits on a branch per machine; doing that to a repository the
-    # vault only sits inside would move a branch that is not cairn's to move.
+    # cairn commits every save and moves branches of its own; doing that to a
+    # repository the vault only sits inside would move branches that are not
+    # cairn's to move.
     nested = os.path.join(repo, "inner")
     os.makedirs(nested)
     with open(os.path.join(nested, "Deep.md"), "w") as f:
@@ -1421,7 +1547,8 @@ def main():
         test_cert_download(vault, 8960)
         test_terminal(vault, 8936)
         test_git(vault, 8951)
-        test_sync(vault, 8937)
+        test_clients(vault, 8937)
+        test_backup(vault, 8940)
         test_status(vault, 8938)
         test_status_in_repo(vault, 8939)
     finally:

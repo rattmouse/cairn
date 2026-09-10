@@ -3,9 +3,21 @@
 A small browser editor for a folder of markdown notes. Two files, the Python
 standard library and git: no dependencies to install, no build step, no
 internet. Every save is a commit, so every version of every note is in
-`git log`.
+`git log` — and in the History panel beside the note.
 
-![The cairn editor: the vault as a tree on the left, markdown source and live preview in the middle, an outline of the note on the right, and a sync footer along the bottom](docs/screenshot.png)
+Three things, kept apart on purpose:
+
+| | Where | What it is for |
+| --- | --- | --- |
+| **The vault** | This machine, a plain folder | The notes you are editing. Local, always. |
+| **git** | Inside the vault | Every version of every note, a branch per browser, and the merge when two of them edit at once. |
+| **Backups** | Somewhere else — Proton Drive, a disk | A zip and a git bundle of the whole thing, on a schedule. Written, never read back. |
+
+The vault does **not** live in Proton Drive. Backups go there; the notes stay
+here. cairn says so in the footer, loudly, if it finds the vault inside a
+provider's folder.
+
+![The cairn editor: the vault as a tree on the left, markdown source and live preview in the middle, an outline of the note on the right, and a footer along the bottom showing the vault, git and the backups](docs/screenshot.png)
 
 The screenshot is the demo vault in `docs/demo-vault/` — nine invented notes,
 not anyone's real ones. You can run the editor against it yourself:
@@ -58,7 +70,8 @@ the login token cross the network in the clear.
 | `--no-browser` | Don't open a browser on start. |
 | `--terminal-cwd PATH` | Where "open in terminal" starts. Default `~/workspace`. |
 | `--no-terminal` | Never open a terminal window. |
-| `--sync-timer UNIT` | A systemd `--user` timer to read the next scheduled sync from, e.g. `vault-sync.timer`. |
+| `--backup-dir PATH` | Where backups of the whole vault go — a Proton Drive folder, an external disk. Must be outside the vault. Also read from `$CAIRN_BACKUP_DIR`. |
+| `--backup-every N` | Hours between automatic backups. Default 24; `0` for the button only. |
 
 ## The window
 
@@ -68,8 +81,8 @@ Four parts, three of which you can put away:
 | --- | --- | --- |
 | Left | The vault as a tree. Folders come from the note paths, remember whether they were shut, and open themselves when you follow a link into one. Search flattens nothing — it filters and opens everything that matched. | `Ctrl/⌘-B` |
 | Middle | Source, preview, both, or **live** — see below. `Ctrl/⌘-\` cycles them. | — |
-| Right | An outline of the open note: its headings, one entry per fenced code block, and every link it contains at the bottom. Built from the text as you type. Clicking an entry moves the preview *and* the caret to that line; scrolling the preview moves the highlight. | `Ctrl/⌘-E` |
-| Bottom | Always on. Left to right: the provider folder the vault is in, the repository cairn keeps the notes in, and Sync. | — |
+| Right | Two tabs. **Outline**: the open note's headings, one entry per fenced code block, and every link it contains. Clicking an entry moves the preview *and* the caret to that line; scrolling the preview moves the highlight. **History**: every commit that touched this note, newest first — click one to read that version and put it back in the editor. | `Ctrl/⌘-E` |
+| Bottom | Always on. Left to right: where the vault is, the repository cairn keeps the notes in, and the backups. | — |
 | Activity | Inside the footer: every line of every command cairn has run, as it runs. | `Ctrl/⌘-J` |
 
 ## Live mode
@@ -98,25 +111,31 @@ always did — and switching modes mid-edit keeps everything you typed.
 
 ## The footer
 
-Three ways these notes leave this machine, and cairn watching all three.
+Three questions, left to right: where are the notes, what is git doing with
+them, and when did a copy last leave this machine.
 
-**The sync folder.** cairn looks at the vault's own path for a provider's
-folder — Proton Drive, iCloud, Dropbox — and names what it finds, along with
-the account the folder is signed in as and when a note last changed on disk.
-It stops there, deliberately: Proton Drive on macOS is a File Provider
-extension with no public interface to its upload queue, so a green dot here
-means *the folder is there and readable*, not *your last save is in the
-cloud*. The chip's tooltip says as much rather than implying otherwise.
+**The vault.** The folder being served, and whether that is a sensible place
+for it. Green means what it should mean: the notes are on this machine, in a
+plain directory, and nothing else is writing them behind cairn's back.
+
+Red means the vault is inside a provider's sync folder — Proton Drive,
+iCloud, Dropbox. cairn finds that by looking at the path, names the provider,
+and says why it is a problem: the provider's client and cairn will both write
+these files with no idea about each other, and the one that finishes last
+wins — including over a merge cairn has just made. The startup banner says
+the same thing. Move the vault out, and point `--backup-dir` at the provider
+instead.
 
 **Git.** The vault is a git repository and cairn owns it. On the first start
-it creates one if there isn't one, puts the machine onto a branch of its own
-(`host/<hostname>`), and commits anything that was already lying around. After
-that every save, every new note and every delete is a commit — one per action,
-no batching. The footer chip shows the branch, whether the tree is clean, how
-far ahead or behind the remote it is, and the last commit's subject.
+it creates one if there isn't one and commits anything that was already lying
+around. After that every save, every new note and every delete is a commit —
+one per action, no batching, on one branch (`main`, or whatever the vault was
+already on). The chip shows the branch, whether the tree is clean, how many
+commits there are, how many browsers are editing, and when the last one
+landed.
 
 The vault has to be the repository's root. If it sits *inside* someone else's
-repository, cairn says so and stops rather than moving a branch that isn't
+repository, cairn says so and stops rather than moving branches that aren't
 its to move.
 
 Whatever hooks the repository has stay armed, and cairn never passes
@@ -125,28 +144,88 @@ built for has one that blocks credential-shaped strings — the save is refused
 with it: nothing is written, the hook's own words appear in a banner above the
 editor, and your text is still in the textarea to fix.
 
-**Sync.** This machine's branch out, every other machine's branch in. Sync
-commits anything outstanding, pushes `host/<hostname>` to `origin`, fetches,
-merges every other `host/*` branch, and pushes the merges. There is no
-`--sync-cmd` and no script: nothing from a request reaches git, and the button
-only appears once the vault has an `origin` to push to.
+**Backups.** When a copy of the whole vault last went somewhere else, and what
+has changed since. See below.
+
+## Two browsers, one note
+
+Every browser session that connects gets a branch of its own,
+`client/<browser>-<id>`. It is a bookmark rather than a workspace — there is
+one folder on disk and one branch checked out — and it marks the commit that
+session has seen. That is enough to do the two jobs it exists for.
+
+**Telling you.** When another device saves, the browsers that are behind get a
+line above the editor: *2 notes changed on another device — including this
+one*, with the paths and a Reload. It is measured in commits, not guessed from
+a clock, and Reload keeps anything unsaved in your textarea.
+
+**Merging.** A save carries the commit its copy came from. If the vault has
+moved on, cairn three-way merges your edit against what is there now — the
+same thing a pull request does, done in the half-second of a save rather than
+in a branch someone has to remember to open. Two people working on different
+parts of a note never notice.
+
+**When it can't.** If you both changed the same lines, nothing is written.
+The two versions come back with the clashing hunks split out, and the editor
+shows them side by side: **keep yours**, **keep the vault's**, **keep both**,
+or edit the result by hand, one hunk at a time. What you save is an ordinary
+save on top of the version that beat you — so there is no half-merged state
+anywhere, and if you close the dialog instead, your text is exactly where you
+left it.
+
+Both versions stay in `git log` whatever you pick.
+
+## History
+
+The second tab on the right. Every commit that touched the open note, newest
+first, with the browser that made it. Click one to read that version rendered,
+and **Restore into the editor** puts its text back in the textarea — not
+saved, not committed, just there, so restoring is an edit you look at before
+you keep it.
+
+Entirely `git log` and `git show` on the server. Nothing in this panel writes.
+
+## Backups
+
+A backup is a copy of the whole vault written somewhere else. It is storage:
+cairn writes backups and never reads one back.
 
 ```bash
-git -C ~/Documents/notes remote add origin /path/to/ProtonDrive/notes.git
+python3 notes-server.py --vault ~/Documents/notes \
+    --backup-dir ~/ProtonDrive/cairn-backups
 ```
 
-A bare repository on a shared folder is enough — the provider only ever syncs
-an opaque object store, never merges text. Conflicting edits resolve to
-whichever machine wrote last; the version that loses is a permanent commit on
-the branch that wrote it, so nothing is gone.
+Each run writes three files with one timestamp:
+
+| File | What it is |
+| --- | --- |
+| `cairn-<vault>-<stamp>.zip` | Every note and attachment, openable by anything. |
+| `cairn-<vault>-<stamp>.bundle` | The whole git history in one file. `git clone that.bundle notes` gives you the vault back, every version intact. |
+| `cairn-<vault>-<stamp>.json` | Which commit it was taken at, and how big. |
+
+The zip is the copy a person can read without git; the bundle is the one that
+still has every version in it. The manifest is what lets the footer say what
+has changed since — it names a commit, so *3 notes changed since your last
+backup* is `git diff` against that commit, not a guess from timestamps. If the
+newest backup in the folder is from a history this vault does not have, cairn
+says it cannot tell rather than printing a number that means nothing.
+
+They happen every 24 hours (`--backup-every`, `0` to turn the schedule off)
+and whenever you press **Back up**. The dial beside it fills as the next one
+comes due. Anything uncommitted in the vault is committed first, so the zip
+and the bundle agree with each other.
+
+The destination is fixed at startup and no request can name one: `/api/backup`
+reads nothing from its body. cairn refuses to start if the backup directory
+and the vault are inside one another.
 
 ## Activity
 
-Everything cairn runs, in the panel above the footer. A sync's git commands
+Everything cairn runs, in the panel above the footer. A backup's git commands
 and their output arrive as they happen rather than in one lump at the end, so
-a slow push shows you where it has got to. Opening a terminal
-from a code block leaves a line here too. It is this process's own record and
-lives in memory: restarting the server empties it.
+a slow bundle shows you where it has got to. Merges, conflicts and opening a
+terminal from a code block each leave a line here too. It is this process's
+own record and lives in memory: restarting the server empties it.
 
 ## Code blocks
 
@@ -237,18 +316,21 @@ without invalidating anything.
 - A save and its commit are atomic: both, or neither. A commit the repository
   refuses leaves the file byte-for-byte as it was, with nothing staged and
   nothing recorded.
-- Every version of every note is in `git log`, so a bad edit is one
-  `git show` away. Deleting also moves the file to `trash/` in the state
-  directory — an undelete button for a wrong click, next to a history that
-  keeps the record.
-- The state directory is *outside* the vault, so a vault in a sync folder
-  (Proton Drive, iCloud, Dropbox) doesn't keep deleted notes synced forever,
-  and the `--tls` private key never reaches the cloud. Older vaults with
-  `.backups/`, `.trash/` or `.certs/` inside them are moved out on the next
-  start; the banner says where.
+- Every version of every note is in `git log` and in the History panel, so a
+  bad edit is one click away. Deleting also moves the file to `trash/` in the
+  state directory — an undelete button for a wrong click, next to a history
+  that keeps the record.
+- Two browsers editing one note is a merge, not a lost edit. When it can't be
+  merged, nothing is written at all until you have picked a side.
+- Backups are written, never read: no restore path can be triggered from the
+  browser, and no request can say where a copy of the vault goes.
+- The state directory is *outside* the vault, so deleted notes and the
+  `--tls` private key stay out of anything that copies the vault. Older
+  vaults with `.backups/`, `.trash/` or `.certs/` inside them are moved out on
+  the next start; the banner says where.
 - Every git command is a fixed argv list run in the vault: no shell, and
   nothing from a request body is ever an argument.
-- A save is refused if the file changed on disk since the browser loaded it.
+- A save that cannot be merged is refused rather than resolved for you.
 - Paths are resolved against the vault root; only `.md` files can be written.
 - Opening a terminal is refused for anything but a browser on this machine,
   and it types the command rather than running it.
@@ -260,6 +342,11 @@ the same thing. Not a release process — a number that moves when the editor
 does, so a screenshot, a bug report and a running server can be talked about
 as the same thing.
 
+- **0.4** — sync and backup pulled apart. A branch per browser, a three-way
+  merge behind every save, conflicts settled hunk by hunk in the page, a
+  History panel, and backups as a zip and a git bundle written somewhere
+  else. The `origin` remote, `--sync-cmd`'s replacement and `--sync-timer`
+  are gone; the vault is local.
 - **0.3** — the vault is a git repository cairn owns: a commit per save, a
   branch per machine, and Sync merges them. `.backups/` and `--sync-cmd` are
   gone.
@@ -289,9 +376,10 @@ python3 tests/test_server.py
 ```
 
 Checks over auth, reading, writing, path safety, TLS, opening a terminal, the
-git repository, sync, and the footer's own endpoints — including a hook that
-refuses a save, two machines' branches merging through a bare repository, and
-a throwaway vault inside a folder named the way Proton Drive names its own.
+git repository, merging, backups, and the footer's own endpoints — including a
+hook that refuses a save, two browsers editing one note into a merge and then
+into a conflict, a backup bundle restored with a plain `git clone`, and a
+throwaway vault inside a folder named the way Proton Drive names its own.
 Standard library only. It builds a throwaway vault in `/tmp` and never touches
 a real one. No terminal window is opened during the tests: a shim records what
 the server tried to launch, and the shell part is driven under a pty, which is
