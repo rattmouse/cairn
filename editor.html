@@ -131,17 +131,17 @@ body[data-right="off"] #outline{display:none}
 .item.dir:hover{color:var(--ink)}
 .empty{padding:22px 16px;font-size:12.5px;color:var(--faint);text-align:center;line-height:1.7}
 
-/* The sync block lives in the footer now, laid out along it rather than down
-   the sidebar. The dial is unchanged: it still shows how far through the wait
-   between runs you are. */
-#sync{display:flex;align-items:center;gap:8px;min-width:0}
-#sync[hidden]{display:none}
+/* The backup block sits in the footer, laid out along it rather than down the
+   sidebar. The dial shows how far through the wait for the next backup you
+   are, so an overdue vault reads at a glance. */
+#backup{display:flex;align-items:center;gap:8px;min-width:0;flex:0 1 auto}
+#backup[hidden]{display:none}
 #dial{width:22px;height:22px;flex:0 0 22px;display:block}
-#syncInfo{font-size:11.5px;color:var(--dim);line-height:1.4;min-width:0;white-space:nowrap;
+#backupInfo{font-size:11.5px;color:var(--dim);line-height:1.4;min-width:0;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
-#syncInfo b{font-weight:600;color:var(--ink)}
-#syncInfo .bad{color:var(--bad);font-weight:600}
-#syncBtn{padding:4px 9px;font-size:11.5px}
+#backupInfo b{font-weight:600;color:var(--ink)}
+#backupInfo .bad{color:var(--bad);font-weight:600}
+#backupBtn{padding:4px 9px;font-size:11.5px}
 
 /* ------------------------------ main ------------------------------ */
 #main{flex:1;display:flex;flex-direction:column;min-width:0}
@@ -174,6 +174,61 @@ body[data-right="off"] #outline{display:none}
   font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
 #refused .why{color:var(--dim)}
 #refused button{float:right;margin-left:10px}
+
+/* Another browser moved the notes under this one. Not an error and not in
+   the way: a line the user can act on or ignore. */
+#elsewhere{margin:0 16px 10px;padding:7px 12px;border-radius:8px;
+  border:1px solid var(--note);background:var(--note-bg);font-size:12.5px;
+  color:var(--ink);display:flex;align-items:center;gap:10px}
+#elsewhere[hidden]{display:none}
+#elsewhere button{margin-left:auto;flex:0 0 auto}
+
+/* ------------------------- the conflict resolver -------------------------
+   A save that could not be merged, laid out hunk by hunk. It covers the
+   editor because there is a decision to make and the textarea behind it is
+   not where it gets made -- but nothing has been written, and Keep editing
+   puts everything back exactly as it was. */
+#cveil,#vveil{position:fixed;inset:0;background:rgba(24,20,14,.45);z-index:60;
+  display:none;align-items:center;justify-content:center;padding:24px}
+#cveil.open,#vveil.open{display:flex}
+#vbody{flex:1;overflow-y:auto;padding:18px 24px}
+#cdlg,#vdlg{background:var(--panel);border:1px solid var(--edge);border-radius:12px;
+  box-shadow:var(--shadow-lg);width:min(880px,100%);max-height:100%;
+  display:flex;flex-direction:column;overflow:hidden}
+#chead,#vhead{padding:16px 20px 12px;border-bottom:1px solid var(--edge)}
+#chead h2,#vhead h2{margin:0;font-size:15px;font-weight:700}
+#chead p,#vhead p{margin:6px 0 0;font-size:12.5px;color:var(--dim);line-height:1.55}
+#cbody{flex:1;overflow-y:auto;padding:14px 20px}
+#cfoot .btn,#vfoot .btn,#chead,#vhead{flex:0 0 auto}
+#cfoot,#vfoot{padding:12px 20px;border-top:1px solid var(--edge);display:flex;
+  align-items:center;gap:10px}
+#cTally,#vTally{font-size:12px;color:var(--dim);margin-right:auto}
+.hunk{border:1px solid var(--edge);border-radius:9px;margin-bottom:12px;
+  overflow:hidden;background:var(--bg)}
+.hunk.kept{border-color:var(--ok)}
+.hunk .hh{display:flex;align-items:center;gap:8px;padding:7px 11px;
+  background:var(--panel);border-bottom:1px solid var(--edge);
+  font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--faint)}
+.hunk .hh .btn{padding:3px 8px;font-size:11px;letter-spacing:0;text-transform:none;
+  font-weight:500}
+.hunk .hh .btn.on{background:var(--accent-soft);border-color:var(--accent);
+  color:var(--accent)}
+.hunk .hh .who{margin-right:auto}
+.side{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--edge)}
+.side > div{background:var(--bg);padding:9px 11px;min-width:0}
+.side .lab{font-size:10px;font-weight:700;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--faint);margin-bottom:5px}
+.side.chosen-yours .s-vault,.side.chosen-vault .s-yours{opacity:.4}
+.hunk pre{margin:0;white-space:pre-wrap;word-break:break-word;
+  font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink)}
+.hunk textarea{width:100%;min-height:74px;resize:vertical;border:1px solid var(--edge);
+  border-radius:6px;padding:8px;background:var(--code-bg);color:var(--ink);
+  font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+.hunk .same{padding:8px 11px;color:var(--dim)}
+.ctx{padding:6px 11px;font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--faint);white-space:pre-wrap;word-break:break-word;
+  border-left:3px solid var(--edge-soft);margin:0 0 12px 4px}
 #panes{flex:1;display:flex;min-height:0;position:relative}
 #editWrap,#viewWrap,#liveWrap{min-width:0;position:relative;flex:1 1 0}
 #editWrap{display:none}
@@ -303,11 +358,28 @@ body.resizing{cursor:col-resize;user-select:none}
 /* ---------------------------- the outline ---------------------------- */
 #outline{width:252px;flex:0 0 252px;background:var(--panel);
   border-left:1px solid var(--edge);display:flex;flex-direction:column;overflow:hidden}
-.phead{padding:13px 16px 11px;display:flex;align-items:baseline;gap:8px;
+.phead{padding:13px 16px 11px;display:flex;align-items:baseline;gap:12px;
   font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
   color:var(--faint);border-bottom:1px solid var(--edge)}
+.ptab{background:none;border:0;padding:0;font:inherit;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--faint);cursor:pointer}
+.ptab:hover{color:var(--dim)}
+.ptab.on{color:var(--accent)}
 #outTally{margin-left:auto;letter-spacing:.04em;font-weight:400}
-#outBody{flex:1;overflow-y:auto;padding:6px 0 26px;scrollbar-gutter:stable}
+#outBody,#histBody{flex:1;overflow-y:auto;padding:6px 0 26px;scrollbar-gutter:stable}
+#outBody[hidden],#histBody[hidden]{display:none}
+/* One version of the open note. The subject is what `git log --oneline`
+   shows; the line under it is when, and which browser wrote it. */
+.v{display:block;width:100%;text-align:left;padding:7px 14px;border:0;
+  border-left:3px solid transparent;background:none;cursor:pointer;
+  font-size:12.5px;line-height:1.4;color:var(--ink)}
+.v:hover{background:var(--sel)}
+.v.here{background:var(--accent-soft);border-left-color:var(--accent)}
+.v .when{display:block;margin-top:2px;font-size:11px;color:var(--faint)}
+.v .sha{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px}
+#histBody .empty{padding:18px 16px;color:var(--dim);font-size:12.5px;line-height:1.6}
+#histBody .head{padding:10px 14px;font-size:11.5px;color:var(--dim);
+  border-bottom:1px solid var(--edge-soft)}
 .o{display:flex;gap:7px;align-items:baseline;width:100%;text-align:left;
   padding:4px 12px 4px 13px;font-size:12.5px;line-height:1.45;color:var(--ink);
   background:none;border:0;border-left:3px solid transparent;cursor:pointer;
@@ -350,19 +422,19 @@ body[data-console="on"] #console{display:block}
 .ln.end .m{color:var(--ok);font-weight:700}
 .ln.err .m{color:var(--bad)}
 .ln.term .m{color:var(--note)}
-/* The git commands a sync runs, so the panel reads as a transcript of one. */
+/* The git commands a run makes, so the panel reads as a transcript. */
 .ln.cmd .m{color:var(--dim)}
 #footbar{display:flex;align-items:center;gap:14px;padding:5px 14px;min-height:34px;
   font-size:11.5px;color:var(--dim)}
 #ver{flex:0 0 auto;font-size:10px;letter-spacing:.09em;text-transform:uppercase;
   font-weight:700;color:var(--faint)}
-.chip{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis}
+.chip{display:flex;align-items:center;gap:6px;min-width:0;max-width:34%;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
 .chip b{color:var(--ink);font-weight:600}
 .chip .bad{color:var(--bad);font-weight:600}
 .chip .sep{color:var(--faint)}
 .chip canvas{width:9px;height:9px;flex:0 0 9px;display:block}
-#footgap{flex:1;min-width:8px}
+#footgap{flex:1 1 8px;min-width:8px}
 .tog{padding:4px 9px;font-size:11.5px;color:var(--dim);background:var(--bg);
   border:1px solid var(--edge);border-radius:var(--r);cursor:pointer;white-space:nowrap;
   transition:border-color .12s,color .12s,background .12s}
@@ -496,6 +568,10 @@ body[data-console="on"] #console{display:block}
         save again.</div>
       <pre id="refusedWhy"></pre>
     </div>
+    <div id="elsewhere" hidden role="status">
+      <button class="btn" id="elseBtn" type="button">Reload</button>
+      <span id="elseWhat"></span>
+    </div>
     <div id="panes">
       <div id="editWrap">
         <textarea id="ed" spellcheck="false" placeholder="Pick a note from the left…"></textarea>
@@ -508,8 +584,15 @@ body[data-console="on"] #console{display:block}
   </main>
 
   <aside id="outline">
-    <div class="phead">Outline<span id="outTally"></span></div>
+    <div class="phead" role="tablist">
+      <button class="ptab on" id="outTab" role="tab" type="button"
+        aria-selected="true">Outline</button>
+      <button class="ptab" id="histTab" role="tab" type="button"
+        aria-selected="false">History</button>
+      <span id="outTally"></span>
+    </div>
     <div id="outBody"></div>
+    <div id="histBody" hidden></div>
   </aside>
  </div>
 
@@ -517,19 +600,48 @@ body[data-console="on"] #console{display:block}
    <div id="console"><div class="idle">Nothing has run yet.</div></div>
    <div id="footbar">
      <span id="ver">cairn</span>
-     <div class="chip" id="cloudChip"></div>
+     <div class="chip" id="vaultChip"></div>
      <div class="chip" id="gitChip"></div>
      <div id="footgap"></div>
-     <div id="sync" hidden>
+     <div id="backup" hidden>
        <canvas id="dial" aria-hidden="true"></canvas>
-       <div id="syncInfo"></div>
-       <button class="btn" id="syncBtn">Sync</button>
+       <div id="backupInfo"></div>
+       <button class="btn" id="backupBtn">Back up</button>
      </div>
      <button class="tog" id="consoleBtn" type="button"
        title="What cairn has run (Ctrl/⌘-J)" aria-pressed="false">Activity</button>
    </div>
  </footer>
 </div>
+
+<div id="vveil"><div id="vdlg" role="dialog" aria-modal="true"
+  aria-labelledby="vTitle">
+  <div id="vhead">
+    <h2 id="vTitle">An earlier version</h2>
+    <p id="vHint"></p>
+  </div>
+  <div id="vbody" class="md"></div>
+  <div id="vfoot">
+    <span id="vTally"></span>
+    <button class="btn" id="vClose" type="button">Close</button>
+    <button class="btn primary" id="vRestore" type="button">Restore into the editor</button>
+  </div>
+</div></div>
+
+<div id="cveil"><div id="cdlg" role="dialog" aria-modal="true" aria-labelledby="cTitle">
+  <div id="chead">
+    <h2 id="cTitle">This note changed on another device</h2>
+    <p id="cHint">Your edit was merged with the version in the vault, except
+      where you both changed the same lines. Pick a side for each one — or
+      edit the result directly — and save.</p>
+  </div>
+  <div id="cbody"></div>
+  <div id="cfoot">
+    <span id="cTally"></span>
+    <button class="btn" id="cCancel" type="button">Keep editing</button>
+    <button class="btn primary" id="cSave" type="button">Save the result</button>
+  </div>
+</div></div>
 
 <div id="veil"><div id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
   <h2 id="dlgTitle">New note</h2>
@@ -916,8 +1028,8 @@ function dot(el, tone){
   return s;
 }
 
-/* ----------------------------- sync dial -----------------------------
-   The arc is the share of the interval between the last sync and the next
+/* ----------------------------- backup dial -----------------------------
+   The arc is the share of the interval between the last backup and the next
    that has already elapsed, so a glance says how overdue a vault is.   */
 let dialFrac = 0, dialRunning = false, dialBad = false;
 const dialS = surface($("dial"), (g, w, h, s) => {
@@ -1455,6 +1567,10 @@ function render(text, ctx, base){
 
 /* ============================== state ============================== */
 let NOTES = [], IMAGES = {}, TARGETS = {}, TERMINAL_OK = false;
+/* The commit this page's copy of the vault came from. It travels with every
+   save, which is what lets the server merge an edit made against an older
+   version instead of refusing it. */
+let HEAD = null;
 let current = null, dirty = false, saving = false;
 
 const listEl = $("list"), viewEl = $("view");
@@ -1709,10 +1825,14 @@ function bit(parent, cls, text){
 
 function drawOutline(){
   const box = $("outBody");
+  /* The tally belongs to whichever tab is showing. The outline is still built
+     while History is up — switching back has to be instant — it just does not
+     get to write the count. */
+  const tally = t => { if (!box.hidden) $("outTally").textContent = t; };
   box.innerHTML = "";
   if (!current){
     box.innerHTML = '<div class="empty">No note open.</div>';
-    $("outTally").textContent = "";
+    tally("");
     return;
   }
   const o = outlineOf(edEl.value);
@@ -1761,8 +1881,8 @@ function drawOutline(){
       }
     }
   }
-  $("outTally").textContent = o.items.length + " item" + (o.items.length === 1 ? "" : "s")
-    + (o.links.length ? " · " + o.links.length + " link" + (o.links.length === 1 ? "" : "s") : "");
+  tally(o.items.length + " item" + (o.items.length === 1 ? "" : "s")
+    + (o.links.length ? " · " + o.links.length + " link" + (o.links.length === 1 ? "" : "s") : ""));
   spy();
 }
 
@@ -2243,6 +2363,7 @@ function open_(path){
   drawStats();
   mapS.paint();
   document.title = n.title + " — cairn";
+  if (onHist()){ HIST_FOR = null; loadHistory(); }
   $("trashBtn").disabled = false;
   reveal(n.path);
   drawList(qEl.value);
@@ -2256,8 +2377,10 @@ async function save(){
   try{
     const r = await api("/api/note", {
       method: "PUT",
-      body: JSON.stringify({path: current.path, content: edEl.value, mtime: current.mtime})
+      body: JSON.stringify({path: current.path, content: edEl.value,
+                            base: HEAD, mtime: current.mtime})
     });
+    HEAD = r.head || HEAD;
     current.raw = r.content;
     current.mtime = r.mtime;
     if (edEl.value !== r.content){        // server refreshed `updated:`
@@ -2273,10 +2396,15 @@ async function save(){
     showRefusal(null);
     /* The sha is the whole point of the commit being part of the save: it is
        what `git show` takes to bring this exact version back. */
-    setStatus("saved" + (r.commit ? " · " + r.commit : ""), "saved");
+    setStatus((r.merged ? "saved · merged with the vault" : "saved")
+            + (r.commit ? " · " + r.commit : ""), "saved");
     preview();
     drawStats();
     mapS.paint();
+    if (onHist()) loadHistory(true);
+    /* The footer's commit count and the backup's "changed since" both just
+       moved. Not awaited: the save is already done. */
+    refreshStatus();
     setTimeout(() => { if (!dirty) setStatus("", ""); }, 4000);
   } catch (e){
     saving = false;
@@ -2289,6 +2417,14 @@ async function save(){
       if (typeof e.detail.content === "string") current.raw = e.detail.content;
       if (e.detail.mtime) current.mtime = e.detail.mtime;
       showRefusal(e.detail.refused || e.message);
+      return;
+    }
+    if (e.status === 409 && e.detail && e.detail.conflict){
+      /* Both browsers changed the same lines. Nothing was written; the two
+         versions and the hunks that clash are in the payload, and this is
+         where the user settles them. */
+      setStatus("this note changed on another device — pick a side", "error");
+      openConflict(e.detail.conflict);
       return;
     }
     if (/changed on disk/.test(e.message)){
@@ -2306,6 +2442,254 @@ function showRefusal(text){
   $("refusedWhy").textContent = text || "";
   el.hidden = !text;
 }
+
+/* ------------------------------- history -------------------------------
+   Every save is a commit, and this is the panel that finally reads them. It
+   is `git log` for the open note and `git show` for one version of it, both
+   entirely server-side: nothing here writes, and restoring is an ordinary
+   edit the user still has to save.                                      */
+
+let HIST = [], HIST_FOR = null, VERSION_SHOWN = null;
+
+function histTab(on){
+  $("outTab").classList.toggle("on", !on);
+  $("histTab").classList.toggle("on", on);
+  $("outTab").setAttribute("aria-selected", on ? "false" : "true");
+  $("histTab").setAttribute("aria-selected", on ? "true" : "false");
+  $("outBody").hidden = on;
+  $("histBody").hidden = !on;
+  $("outTally").textContent = "";
+  if (on) loadHistory();
+  else drawOutline();
+}
+const onHist = () => !$("histBody").hidden;
+
+async function loadHistory(force){
+  if (!onHist()) return;
+  const el = $("histBody");
+  if (!current){
+    el.innerHTML = '<div class="empty">Open a note to see its history.</div>';
+    return;
+  }
+  if (HIST_FOR === current.path && !force) return drawHistory();
+  el.innerHTML = '<div class="empty">Reading the log…</div>';
+  try {
+    const r = await api("/api/history?path=" + encodeURIComponent(current.path));
+    HIST = r.versions; HIST_FOR = current.path;
+  } catch (e){
+    HIST = []; HIST_FOR = null;
+    el.innerHTML = '<div class="empty">' + esc(e.message) + "</div>";
+    return;
+  }
+  drawHistory();
+}
+
+function drawHistory(){
+  const el = $("histBody");
+  el.innerHTML = "";
+  $("outTally").textContent = HIST.length ? HIST.length + (HIST.length === 40 ? "+" : "") : "";
+  if (!HIST.length){
+    el.innerHTML = '<div class="empty">No commits touch this note yet.</div>';
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "head";
+  head.textContent = "Every version of this note, newest first.";
+  el.appendChild(head);
+  HIST.forEach((v, i) => {
+    const b = document.createElement("button");
+    b.className = "v" + (i === 0 ? " here" : "");
+    b.type = "button";
+    b.innerHTML = esc(v.subject)
+      + '<span class="when"><span class="sha">' + esc(v.short) + "</span> · "
+      + esc(rel(v.at)) + (v.client ? " · " + esc(v.client) : "")
+      + (i === 0 ? " · now" : "") + "</span>";
+    b.addEventListener("click", () => showVersion(v));
+    el.appendChild(b);
+  });
+}
+
+async function showVersion(v){
+  const path = HIST_FOR;
+  try {
+    const got = await api("/api/history/show?sha=" + encodeURIComponent(v.sha)
+                        + "&path=" + encodeURIComponent(path));
+    VERSION_SHOWN = {version: v, path: path, content: got.content};
+  } catch (e){
+    setStatus(e.message, "error");
+    return;
+  }
+  $("vTitle").textContent = (current && current.title) || path;
+  $("vHint").textContent = v.subject + " · " + v.short + " · " + rel(v.at)
+                         + (v.client ? " · " + v.client : "");
+  $("vTally").textContent = "Read-only. Restoring only fills the editor — you "
+                          + "still save it, and it becomes a new commit.";
+  dropSurfacesIn($("vbody"));
+  $("vbody").innerHTML = render(VERSION_SHOWN.content, ctx());
+  hydrate($("vbody"));
+  $("vRestore").disabled = !current || current.path !== path;
+  $("vveil").classList.add("open");
+}
+
+function closeVersion(){
+  $("vveil").classList.remove("open");
+  dropSurfacesIn($("vbody"));
+  $("vbody").innerHTML = "";
+  VERSION_SHOWN = null;
+}
+
+$("vClose").addEventListener("click", closeVersion);
+$("vRestore").addEventListener("click", () => {
+  const v = VERSION_SHOWN;
+  if (!v || !current || current.path !== v.path) return closeVersion();
+  edEl.value = v.content;
+  closeVersion();
+  setDirty(true);
+  preview();
+  drawStats();
+  mapS.paint();
+  setStatus("restored " + v.version.short + " into the editor — not saved yet",
+            "dirty");
+});
+
+$("outTab").addEventListener("click", () => histTab(false));
+$("histTab").addEventListener("click", () => histTab(true));
+
+/* --------------------------- merge conflicts ---------------------------
+   A save the server could not merge on its own. It sent back both versions
+   and the hunks that clash, and nothing was written — so this is a decision,
+   not a repair. One choice per hunk, or edit the result by hand; what goes
+   back is an ordinary save on top of the commit that beat us.           */
+
+let CONFLICT = null;
+
+function openConflict(c){
+  CONFLICT = c;
+  const body = $("cbody");
+  body.innerHTML = "";
+  let n = 0;
+  c.segments.forEach((seg, i) => {
+    if (seg.kind === "same"){
+      /* Context, trimmed: the point is to locate the hunk, not to re-read the
+         note in a dialog. */
+      const text = seg.text.replace(/\n+$/, "");
+      if (!text.trim()) return;
+      const lines = text.split("\n");
+      const shown = lines.length > 6
+        ? lines.slice(0, 3).concat(["…"], lines.slice(-2)).join("\n")
+        : text;
+      const d = document.createElement("div");
+      d.className = "ctx";
+      d.textContent = shown;
+      body.appendChild(d);
+      return;
+    }
+    n++;
+    const box = document.createElement("div");
+    box.className = "hunk";
+    box.dataset.i = i;
+    box.innerHTML =
+      '<div class="hh"><span class="who">Hunk ' + n + '</span>'
+      + '<button class="btn" data-pick="yours" type="button">Keep yours</button>'
+      + '<button class="btn" data-pick="vault" type="button">Keep the vault\u2019s</button>'
+      + '<button class="btn" data-pick="both" type="button">Keep both</button>'
+      + '<button class="btn" data-pick="edit" type="button">Edit</button></div>'
+      + '<div class="side"><div class="s-yours"><div class="lab">Yours</div>'
+      + '<pre></pre></div><div class="s-vault"><div class="lab">In the vault</div>'
+      + '<pre></pre></div></div>';
+    box.querySelector(".s-yours pre").textContent = seg.yours || "(nothing)";
+    box.querySelector(".s-vault pre").textContent = seg.vault || "(nothing)";
+    body.appendChild(box);
+  });
+  $("cTally").textContent = n + (n === 1 ? " hunk to settle" : " hunks to settle");
+  $("cveil").classList.add("open");
+  $("cSave").disabled = true;
+  updateConflict();
+}
+
+function closeConflict(){
+  $("cveil").classList.remove("open");
+  CONFLICT = null;
+}
+
+function updateConflict(){
+  /* Every hunk needs a side before the result means anything. */
+  const boxes = [...$("cbody").querySelectorAll(".hunk")];
+  const done = boxes.filter(b => b.dataset.pick).length;
+  $("cSave").disabled = done !== boxes.length;
+  $("cTally").textContent = done === boxes.length
+    ? "All settled"
+    : (boxes.length - done) + " of " + boxes.length + " still to settle";
+}
+
+function conflictText(){
+  /* Rebuild the note from the segments and the choices, in order. */
+  if (!CONFLICT) return "";
+  const picks = {};
+  for (const b of $("cbody").querySelectorAll(".hunk")){
+    picks[b.dataset.i] = {pick: b.dataset.pick,
+                          edited: b.querySelector("textarea")};
+  }
+  return CONFLICT.segments.map((seg, i) => {
+    if (seg.kind === "same") return seg.text;
+    const p = picks[i] || {};
+    if (p.pick === "edit" && p.edited) return p.edited.value;
+    if (p.pick === "vault") return seg.vault;
+    if (p.pick === "both")  return seg.yours + seg.vault;
+    return seg.yours;
+  }).join("");
+}
+
+$("cbody").addEventListener("click", e => {
+  const btn = e.target.closest("button[data-pick]");
+  if (!btn) return;
+  const box = btn.closest(".hunk"), pick = btn.dataset.pick;
+  const seg = CONFLICT.segments[+box.dataset.i];
+  box.dataset.pick = pick;
+  box.classList.add("kept");
+  for (const b of box.querySelectorAll("button[data-pick]"))
+    b.classList.toggle("on", b === btn);
+  const side = box.querySelector(".side");
+  side.className = "side" + (pick === "yours" ? " chosen-yours"
+                           : pick === "vault" ? " chosen-vault" : "");
+  let ta = box.querySelector("textarea");
+  if (pick === "edit"){
+    if (!ta){
+      ta = document.createElement("textarea");
+      ta.value = seg.yours + seg.vault;
+      ta.spellcheck = false;
+      const wrap = document.createElement("div");
+      wrap.style.padding = "9px 11px";
+      wrap.appendChild(ta);
+      box.appendChild(wrap);
+    }
+    ta.focus();
+  } else if (ta){
+    ta.closest("div").remove();
+  }
+  updateConflict();
+});
+
+$("cCancel").addEventListener("click", () => {
+  /* Nothing was written and nothing is lost: the textarea still holds exactly
+     what was typed, and the note can be saved again whenever. */
+  closeConflict();
+  setStatus("nothing was saved — your text is still here", "error");
+});
+
+$("cSave").addEventListener("click", async () => {
+  const c = CONFLICT, text = conflictText();
+  closeConflict();
+  /* Put the settled text in the editor first. If the save is refused after
+     all — a hook, or a third browser landing in between — this is where the
+     work is, and it is the same place it would have been anyway. */
+  edEl.value = text;
+  setDirty(true);
+  preview();
+  /* `base` is the commit we conflicted with, so this save is on top of it. */
+  HEAD = c.head || HEAD;
+  await save();
+});
 
 /* ---------------------------- dialog ---------------------------- */
 const folderSel = makeSelect($("dlgFolder"), "Folder");
@@ -2360,14 +2744,15 @@ async function trashNote(){
   } catch (e){ setStatus(e.message, "error"); }
 }
 
-/* ----------------------------- sync ----------------------------- */
-/* Sync is this machine's branch out and every other machine's branch in.
-   The row is here whenever cairn has answered at all: with an `origin` to
-   push to it is a button and a dial, and without one it says so, because a
-   missing remote is a thing to fix rather than a feature to hide.       */
+/* ----------------------------- backups ----------------------------- */
+/* A backup is a copy of the whole vault somewhere else — a Proton Drive
+   folder, an external disk. It is not where the notes live and not how two
+   browsers share an edit; git does that, and the chip beside this says so.
+   The row is here whenever cairn has answered at all: with a destination it
+   is a button and a dial, and without one it says how to give it one.    */
 
-const syncEl = $("sync"), syncBtn = $("syncBtn"), syncInfo = $("syncInfo");
-let SYNC = null;
+const backupEl = $("backup"), backupBtn = $("backupBtn"), backupInfo = $("backupInfo");
+let BACKUP = null;
 
 function rel(t){
   const delta = t * 1000 - Date.now(), ahead = delta > 0;
@@ -2381,69 +2766,82 @@ function rel(t){
   return ahead ? "in " + phrase : phrase + " ago";
 }
 
-function drawSync(){
-  const s = SYNC;
-  /* An attribute rather than a class: the mode switch owns body's classes. */
-  if (s && s.enabled) document.body.dataset.sync = "on";
-  else delete document.body.dataset.sync;
-  if (!s){ syncEl.hidden = true; animate(dialS, false); return; }
-  syncEl.hidden = false;
+function plural(n, word){ return n + " " + word + (n === 1 ? "" : "s"); }
 
-  if (!s.enabled){
-    /* No origin. Nothing to push to and nobody's branch to merge, so the
-       button would be a lie — but every save is still committed, and the
-       git chip beside this says so. */
-    syncBtn.hidden = true;
-    syncInfo.innerHTML = 'Sync off <span class="sep">·</span> no remote';
-    syncEl.title = "Sync would push " + (s.branch || "this machine's branch")
-      + " to `origin` and merge the other machines' branches back, but this "
-      + "vault has no origin. A bare repository on a shared folder is enough:"
-      + "\n\n    git -C <vault> remote add origin <path or url>";
+function drawBackup(){
+  const b = BACKUP;
+  /* An attribute rather than a class: the mode switch owns body's classes. */
+  if (b && b.enabled) document.body.dataset.backup = "on";
+  else delete document.body.dataset.backup;
+  if (!b){ backupEl.hidden = true; animate(dialS, false); return; }
+  backupEl.hidden = false;
+
+  if (!b.enabled){
+    /* Nowhere to put a copy, so the button would be a lie — but every save is
+       still a commit, and the git chip beside this says so. */
+    backupBtn.hidden = true;
+    backupInfo.innerHTML = 'Backups off <span class="sep">·</span> no destination';
+    backupEl.title = "cairn can keep a copy of the whole vault somewhere else — "
+      + "a zip you can open by hand and a git bundle with every version in it.\n\n"
+      + "Start it with a destination outside the vault:\n\n"
+      + "    --backup-dir ~/ProtonDrive/cairn-backups";
     dialRunning = dialBad = false; dialFrac = 0;
     animate(dialS, false); dialS.paint();
     return;
   }
-  syncBtn.hidden = false;
-  syncBtn.disabled = !!s.running;
-  syncBtn.textContent = s.running ? "…" : "Sync";
-  syncEl.title = "Push " + (s.branch || "this branch") + " to " + s.remote
-    + ", merge every other machine's branch back, push the merges."
-    + "\n\nConflicts go to whichever machine wrote last."
-    + (s.peers ? "\n\n" + s.peers + " other machine" + (s.peers === 1 ? "" : "s")
-                 + " have branches here." : "");
+  backupBtn.hidden = false;
+  backupBtn.disabled = !!b.running;
+  backupBtn.textContent = b.running ? "…" : "Back up";
 
-  /* A run started by the timer never passes through cairn, so its time comes
-     from systemd and the button's own runs come from the state file. Whichever
-     is more recent is the one that actually touched the notes.             */
-  const mine = s.last && s.last.at, theirs = s.timer_last;
-  const last = Math.max(mine || 0, theirs || 0) || null;
-  const failed = s.last && !s.last.ok && mine && mine >= (theirs || 0);
+  const last = b.last && b.last.at, since = b.since || {};
+  const drift = since.commits || 0;
+  const failed = !!b.error;
+  const missing = !b.present;
 
   const bits = [];
-  if (last) bits.push("Synced <b>" + esc(rel(last)) + "</b>" +
-                      (failed ? ' <span class="bad">— failed</span>' : ""));
-  else      bits.push("No sync yet");
-  if (s.peers) bits.push(s.peers + " other machine" + (s.peers === 1 ? "" : "s"));
-  if (s.next) bits.push("next <b>" + esc(rel(s.next)) + "</b>");
-  syncInfo.innerHTML = bits.join(' <span class="sep">·</span> ');
+  if (last) bits.push("Backed up <b>" + esc(rel(last)) + "</b>");
+  else      bits.push("<b>No backup yet</b>");
+  if (missing) bits.push('<span class="bad">folder not there</span>');
+  else if (failed) bits.push('<span class="bad">last one failed</span>');
+  if (drift) bits.push(plural(since.notes || 0, "note") + " changed since");
+  else if (last && !since.unknown) bits.push("nothing changed since");
+  if (b.next && !b.running) bits.push("next <b>" + esc(rel(b.next)) + "</b>");
+  backupInfo.innerHTML = bits.join(' <span class="sep">·</span> ');
+
+  const lines = [b.dir];
+  if (b.provider) lines.push("inside " + b.provider);
+  lines.push(missing ? "That folder is not readable right now — the provider's "
+                       + "client may be signed out, or the disk unplugged."
+                     : "A zip of the notes and a git bundle of the whole history, "
+                       + "written on every run.");
+  if (since.unknown)
+    lines.push("The last backup there was taken from a different history, so "
+               + "cairn cannot say what has changed since.");
+  else if (drift)
+    lines.push(plural(drift, "commit") + " and "
+               + plural(since.notes || 0, "note") + " since the last one.");
+  if (b.error) lines.push("Last run failed: " + b.error);
+  lines.push(b.every ? "Automatic, every " + (b.every / 3600) + " hours."
+                     : "Automatic backups are off — this button is the only one.");
+  backupEl.title = lines.join("\n\n");
 
   /* How far through the wait we are, for the dial's arc. */
-  dialBad = !!failed;
-  dialRunning = !!s.running;
+  dialBad = failed || missing;
+  dialRunning = !!b.running;
   const t = Date.now() / 1000;
-  dialFrac = (last && s.next && s.next > last) ? clamp((t - last) / (s.next - last), 0, 1)
+  dialFrac = (last && b.next && b.next > last) ? clamp((t - last) / (b.next - last), 0, 1)
                                                : (last ? 1 : 0);
   animate(dialS, dialRunning);
   dialS.paint();
 }
 
 /* ------------------------- the rest of the footer -------------------------
-   Three ways these notes leave this machine. Two of them cairn only watches
-   — the provider's folder, and whatever the user does in a terminal — and
-   the third is its own: the repository in the vault, where every save lands
-   as a commit and Sync moves the branch between machines.              */
+   Three questions, left to right: where are the notes, what is git doing with
+   them, and when did a copy last leave this machine. They used to be tangled
+   together — the vault living in a provider's folder, a remote doing the
+   sharing — and separating them is what this version is for.            */
 
-let GIT = null, CLOUD = null;
+let GIT = null, VAULTINFO = null, CLIENTS = null;
 
 function chip(el, tone, parts, title){
   /* The chip is rebuilt every half minute, and its dot is a canvas. Without
@@ -2456,30 +2854,47 @@ function chip(el, tone, parts, title){
   el.title = title || "";
 }
 
-function drawCloud(){
-  const k = CLOUD, el = $("cloudChip");
-  if (!k || !k.detected){
-    return chip(el, "", ["Not in a sync folder"],
-      "cairn looks at the vault's path for a provider's folder — Proton Drive, "
-      + "iCloud or Dropbox. This vault is not inside one, so nothing off this "
-      + "machine has a copy unless git is pushing somewhere.");
+function drawVault(){
+  const v = VAULTINFO, el = $("vaultChip");
+  if (!v) return chip(el, "", ["Vault"], "");
+  /* The folder's name, not its path: the footer is one line and the whole
+     path is a tooltip away. */
+  const where = v.path.replace(/\/+$/, "").split("/").pop() || v.path;
+  if (!v.in_provider){
+    /* The state cairn wants: notes on this machine, backed up elsewhere. */
+    return chip(el, "ok", ["<b>Vault</b>", esc(where),
+                           NOTES.length ? plural(NOTES.length, "note") : null],
+      "The open vault is on this machine, at\n" + v.path
+      + "\n\nThat is the arrangement cairn expects: one folder, one server, "
+      + "and git keeping track of what every browser does to it. Copies go "
+      + "somewhere else — see the backup chip.");
   }
-  /* The newest note on disk, out of the listing the page already has. It is
-     the honest half of this chip: cairn can see when a file last changed, and
-     cannot see whether the provider has finished uploading it. */
-  const newest = NOTES.reduce((m, n) => Math.max(m, n.mtime || 0), 0);
-  chip(el, k.present ? "ok" : "bad",
-       ["<b>" + esc(k.provider) + "</b>",
-        k.account ? esc(k.account) : null,
-        k.present ? (newest ? "note saved " + esc(rel(newest)) : "no notes yet")
-                  : '<span class="bad">folder is not there</span>'],
-       k.present
-         ? "The vault is inside " + k.root + ".\n\ncairn can see that folder and "
-           + "when its files last changed. It cannot see " + k.provider + "'s "
-           + "upload queue, so this does not promise the last save has reached "
-           + "the cloud."
-         : k.root + " is not readable right now — the client may be signed out "
-           + "or not running.");
+  /* The one arrangement this version exists to warn about. */
+  return chip(el, "bad", ["<b>Vault</b>", esc(where),
+                          '<span class="bad">inside ' + esc(v.provider) + "</span>"],
+    "This vault is inside " + v.provider + ", at\n" + v.root
+    + "\n\n" + v.provider + "'s client and cairn will both write these files "
+    + "with no idea about each other, and the one that finishes last wins — "
+    + "including over a merge cairn has just made.\n\n"
+    + "Move the vault onto this machine and point --backup-dir at "
+    + v.provider + " instead.");
+}
+
+function drawClients(){
+  /* Not a chip: a line above the editor, because it is about the note that is
+     open rather than about the machine. Shown only when another browser has
+     actually moved something. */
+  const c = CLIENTS, el = $("elsewhere");
+  const behind = c && c.behind;
+  if (!behind){ el.hidden = true; return; }
+  const changed = c.changed || [];
+  const mine = current && changed.includes(current.path);
+  $("elseWhat").innerHTML =
+    plural(changed.length || behind, "note") + " changed on another device"
+    + (mine ? " — <b>including this one</b>" : "")
+    + ' <span class="sep">·</span> ' + esc(changed.slice(0, 3).join(", "))
+    + (changed.length > 3 ? " …" : "");
+  el.hidden = false;
 }
 
 function drawGit(){
@@ -2492,27 +2907,26 @@ function drawGit(){
   if (g.changed)   work.push(g.changed + " changed");
   if (g.untracked) work.push(g.untracked + " new");
   bits.push(work.length ? work.join(", ") : "clean");
-
-  if (g.upstream && (g.ahead || g.behind)){
-    const d = [];
-    if (g.ahead)  d.push("↑" + g.ahead);
-    if (g.behind) d.push("↓" + g.behind);
-    bits.push(d.join(" "));
-  }
+  if (g.commits) bits.push(plural(g.commits, "commit"));
+  if (g.clients > 1) bits.push(plural(g.clients, "browser"));
   if (g.last) bits.push("committed " + esc(rel(g.last.at)));
 
   const lines = [g.root];
-  lines.push(g.upstream ? "tracking " + g.upstream
-                        : "no upstream branch — nothing to push to");
   if (g.last) lines.push(g.last.short + "  " + g.last.subject);
-  lines.push(g.remote ? "origin " + g.remote : "no origin — Sync has nowhere to go");
-  /* This line used to say cairn never stages, commits or pushes. It does all
-     three now, and the chip is the only place that says where the history
-     the user is relying on actually goes. */
-  lines.push("cairn commits every save here, on this machine's own branch.");
-  /* Amber for anything that exists only on this machine — uncommitted work,
-     or commits that have not been pushed. Red is kept for a failure. */
-  chip(el, (!g.clean || g.ahead) ? "warn" : "ok", bits, lines.join("\n"));
+  lines.push("Every save is a commit on " + (g.trunk || "this branch") + ".");
+  /* The branch-per-browser design, said once, where someone looking at a
+     `git branch` listing full of client/* would want to read it. */
+  lines.push("Each browser editing this vault has a branch of its own marking "
+             + "what it has seen. A save from a browser that is behind is "
+             + "merged against what is here; a hunk you both changed comes "
+             + "back to you to settle.");
+  if (CLIENTS && CLIENTS.others && CLIENTS.others.length)
+    lines.push("Also here: "
+               + CLIENTS.others.map(o => o.label + (o.active ? "" : " (idle)"))
+                               .join(", "));
+  /* Amber for work that exists only in the working tree — a note edited by
+     something that is not cairn, which the next backup will commit. */
+  chip(el, g.clean ? "ok" : "warn", bits, lines.join("\n\n"));
 }
 
 function drawVersion(v){
@@ -2524,23 +2938,24 @@ function drawVersion(v){
 }
 
 function drawFoot(){
-  drawCloud();
+  drawVault();
   drawGit();
-  drawSync();
+  drawBackup();
+  drawClients();
 }
 
 async function refreshStatus(){
   try {
     const r = await api("/api/status");
-    SYNC = r.sync; GIT = r.git; CLOUD = r.cloud;
+    GIT = r.git; VAULTINFO = r.vault; BACKUP = r.backup; CLIENTS = r.clients;
     drawVersion(r.version);
   } catch (e){
-    SYNC = GIT = CLOUD = null;           /* server too old, or not unlocked */
+    GIT = VAULTINFO = BACKUP = CLIENTS = null;  /* too old, or not unlocked */
   }
   drawFoot();
-  /* A sync the timer started is nobody's click, so this is where the activity
-     panel finds out there is something to follow. */
-  if (SYNC && SYNC.running) scheduleLog(0);
+  /* A backup the schedule started is nobody's click, so this is where the
+     activity panel finds out there is something to follow. */
+  if (BACKUP && BACKUP.running) scheduleLog(0);
 }
 
 /* --------------------------- activity panel ---------------------------
@@ -2549,7 +2964,7 @@ async function refreshStatus(){
    talking.                                                            */
 
 const consoleEl = $("console"), consoleBtn = $("consoleBtn");
-let LOG_SEQ = 0, LOG_EMPTY = true, logSoon = null;
+let LOG_SEQ = 0, LOG_EMPTY = true, logSoon = null, logBusy = false;
 
 function clock(t){
   const d = new Date(t * 1000);
@@ -2576,6 +2991,12 @@ function addLines(lines){
 }
 
 async function logTick(){
+  /* One poll at a time. Two overlapping ticks both ask from the same
+     sequence number and both get the same lines, which puts the transcript
+     in the panel twice — easy to hit, because a run's own start and finish
+     each ask for a poll. */
+  if (logBusy) return;
+  logBusy = true;
   let running = false;
   try {
     const r = await api("/api/run/log?since=" + LOG_SEQ);
@@ -2583,9 +3004,10 @@ async function logTick(){
     addLines(r.lines);
     running = r.running;
   } catch (e){ /* the next poll can try again */ }
+  logBusy = false;
   runDot(running);
   /* Follow a run closely; idle, only often enough that a panel left open
-     notices a timer-driven sync. Closed and idle: stop asking. */
+     notices a scheduled backup. Closed and idle: stop asking. */
   if (running) scheduleLog(900);
   else if (document.body.dataset.console === "on") scheduleLog(6000);
 }
@@ -2607,40 +3029,37 @@ function runDot(on){
   }
 }
 
-async function doSync(){
-  /* A sync rewrites notes on disk. Anything unsaved in the textarea would be
-     silently outrun by it, so make the user deal with that first.          */
-  if (dirty){
-    setStatus("save or discard your changes first — a sync can overwrite this note", "error");
-    return;
-  }
-  syncBtn.disabled = true;
-  syncBtn.textContent = "…";
+async function doBackup(){
+  /* A backup commits anything lying around in the vault first, so that the
+     zip and the bundle agree with each other. Nothing it does touches the
+     textarea, so an unsaved edit is safe — but it would not be *in* the
+     backup, and that is worth saying rather than quietly leaving out. */
+  if (dirty && !confirm("This note has unsaved changes.\n\nA backup copies what "
+                      + "is on disk, so anything you have not saved will not be "
+                      + "in it. Back up anyway?")) return;
+  backupBtn.disabled = true;
+  backupBtn.textContent = "…";
   dialRunning = true; animate(dialS, true);
-  setStatus("syncing…");
+  setStatus("backing up…");
   panel("console", true);                    /* the point of pressing it */
   scheduleLog(0);
   try {
-    const record = (await api("/api/sync", {method: "POST"})).sync;
-    /* The notes on disk may have changed underneath us, including the open
-       one. Not dirty, so reopening it cannot lose anything.                */
-    const was = current && current.path;
-    await reload();
-    if (was) open_(was);
-    /* After the reopen, never before: open_ clears the status line, which
-       would swallow the message this whole function exists to deliver.     */
+    const r = await api("/api/backup", {method: "POST"});
+    const record = r.backup;
     if (record.ok){
-      setStatus("sync finished in " + record.seconds + "s", "saved");
+      setStatus("backed up in " + record.seconds + "s", "saved");
     } else {
-      /* git's own last line is the reason it stopped — a rejected push, a
-         merge it could not decide. The rest of the transcript is in the
-         activity panel above, which has been filling since the run started. */
-      const lines = (record.output || "").trim().split("\n").filter(l => l.trim());
-      const why = lines.length ? lines[lines.length - 1].slice(0, 140) : "";
-      setStatus("sync failed" + (why ? " — " + why : ""), "error");
+      setStatus("backup failed — " + (record.error || "").split("\n")[0].slice(0, 140),
+                "error");
       /* The rest of it is in the activity panel above, which has been filling
          since the run started. */
     }
+    /* A backup commits an outside edit, so the note on screen may have moved
+       under us. Nothing was overwritten — it is a commit of what is already
+       on disk — but the listing needs refetching to stay honest. */
+    const was = current && current.path;
+    await reload();
+    if (was && !dirty) open_(was);
   } catch (e){
     setStatus(e.message, "error");
   }
@@ -2701,6 +3120,10 @@ function restorePanels(){
 async function reload(){
   const r = await api("/api/notes");
   NOTES = r.notes; IMAGES = r.images; TERMINAL_OK = !!r.terminal;
+  HEAD = r.head || HEAD;
+  /* Reading the whole vault is what marks this browser as caught up, so the
+     "changed elsewhere" line goes with it. */
+  if (CLIENTS){ CLIENTS.behind = 0; CLIENTS.changed = []; drawClients(); }
   buildTargets();
   if (current){
     const again = NOTES.find(n => n.path === current.path);
@@ -2850,19 +3273,37 @@ qEl.addEventListener("keydown", e => {
 });
 $("qClear").addEventListener("click", () => { qEl.value = ""; drawList(""); qEl.focus(); });
 saveBtn.addEventListener("click", save);
-syncBtn.addEventListener("click", doSync);
+backupBtn.addEventListener("click", doBackup);
+$("elseBtn").addEventListener("click", async () => {
+  /* Anything unsaved stays in the textarea: reload() refetches the listing and
+     reopens the note, and open_ would overwrite the editor — so a dirty
+     buffer keeps what it has and the user is told the rest moved on. */
+  const was = current && current.path;
+  await reload();
+  if (was && !dirty) open_(was);
+  await refreshStatus();
+  setStatus(dirty ? "reloaded — this note still has your unsaved changes"
+                  : "reloaded", "saved");
+});
 /* Re-render often enough that "in 25 minutes" stays honest, but only ask the
    server every few minutes — each status call spawns a systemctl.          */
 setInterval(drawFoot, 30 * 1000);
-setInterval(refreshStatus, 60 * 1000);
+/* Often enough that "another device is editing this" is news rather than
+   history, and cheap enough not to matter: the server answers it out of a
+   few cached git calls. */
+setInterval(refreshStatus, 20 * 1000);
 $("newBtn").addEventListener("click", openDialog);
 $("trashBtn").addEventListener("click", trashNote);
 $("dlgCancel").addEventListener("click", closeDialog);
 $("dlgOk").addEventListener("click", createNote);
 $("dlgName").addEventListener("keydown", e => { if (e.key === "Enter") createNote(); });
 $("veil").addEventListener("click", e => { if (e.target === $("veil")) closeDialog(); });
+$("vveil").addEventListener("click", e => { if (e.target === $("vveil")) closeVersion(); });
 
 document.addEventListener("keydown", e => {
+  /* A decision is pending and nothing has been written: Ctrl-S here would
+     just hit the same conflict again. */
+  if ($("cveil").classList.contains("open")) return;
   if ((e.ctrlKey || e.metaKey) && e.key === "s"){ e.preventDefault(); save(); }
   if ((e.ctrlKey || e.metaKey) && e.key === "n"){ e.preventDefault(); openDialog(); }
   if ((e.ctrlKey || e.metaKey) && e.key === "\\"){
@@ -2876,7 +3317,10 @@ document.addEventListener("keydown", e => {
     if (e.key === "j"){ e.preventDefault(); toggle("console"); }
   }
   if (e.key === "Escape"){
-    if (dlgOpen()) closeDialog();
+    if ($("vveil").classList.contains("open")) closeVersion();
+    /* Not the conflict dialog: there is a decision pending and nothing has
+       been written, so it takes a real click on Keep editing. */
+    else if (dlgOpen()) closeDialog();
     else if (document.activeElement === qEl){ qEl.value = ""; drawList(""); qEl.blur(); }
     else if (document.body.dataset.console === "on") panel("console", false);
   }
