@@ -140,9 +140,17 @@ def outside(path, vault):
         not os.path.abspath(path).startswith(os.path.abspath(vault) + os.sep)
 
 
-def client(tls=False):
-    """An opener that remembers cookies, like a browser would."""
+def client(tls=False, follow=True):
+    """An opener that remembers cookies, like a browser would.
+
+    With follow=False it hands back a 3xx instead of chasing it, so a test can
+    look at where the server meant to send the browser."""
     jar, handlers = {}, []
+    if not follow:
+        class Stay(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+        handlers.append(Stay())
     if tls:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -177,6 +185,17 @@ def call(op, url, data=None, method=None, headers=None, raw=False):
     except urllib.error.HTTPError as e:
         body = e.read()
         return e.code, body if raw else body.decode("utf-8", "replace")
+
+
+def redirect_to(op, url, data=None, method=None, headers=None):
+    """(status, Location) for one request that is not followed."""
+    r = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    try:
+        with op.open(r, timeout=10) as resp:
+            return resp.status, resp.headers.get("Location")
+    except urllib.error.HTTPError as e:
+        e.read()
+        return e.code, e.headers.get("Location")
 
 
 def form(op, base, token):
@@ -270,6 +289,59 @@ def test_auth(vault, port):
         check("cross-origin request refused", s == 403)
         s, _ = call(op, base + "/nope")
         check("unknown endpoint 404s", s == 404)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+
+def test_note_pages(vault, port):
+    print("\nnote pages")
+    p, token, _ = start(vault, port)
+    try:
+        base = "http://127.0.0.1:%d" % port
+        note = "/n/Notes/Alpha.md"
+        deep = "/n/A%20Folder/With%20Spaces.md"
+
+        op, jar = client()
+        s, b = call(op, base + note)
+        check("a locked note page serves the unlock page",
+              s == 200 and 'name="token"' in b)
+        check("the unlock page remembers which note was asked for",
+              'name="next" value="%s"' % note in b)
+
+        posted = {"Content-Type": "application/x-www-form-urlencoded"}
+        op, jar = client(follow=False)
+        s, to = redirect_to(op, base + "/unlock", method="POST", headers=posted,
+                            data=("token=%s&next=%s" % (token, note)).encode())
+        check("unlocking returns to the note that was asked for",
+              s == 303 and to == note, to)
+
+        op, _ = client(follow=False)
+        s, to = redirect_to(op, base + "/unlock", method="POST", headers=posted,
+                            data=("token=%s&next=https://evil.example/" % token).encode())
+        check("unlocking will not bounce off to another site",
+              s == 303 and to == "/", to)
+
+        op, _ = client(follow=False)
+        s, to = redirect_to(op, base + "/unlock", method="POST", headers=posted,
+                            data=("token=%s&next=//evil.example/x" % token).encode())
+        check("nor to a host smuggled in as a path", s == 303 and to == "/", to)
+
+        # The token in the address becomes a cookie, and the note survives it.
+        op, jar = client(follow=False)
+        s, to = redirect_to(op, base + note + "?token=" + token)
+        check("a note page with a token redirects to itself without one",
+              s == 303 and to == note, to)
+        check("that redirect sets the session cookie", jar.get("notes_session") == token)
+
+        op, jar = client()
+        form(op, base, token)
+        s, b = call(op, base + note)
+        s2, b2 = call(op, base + "/")
+        check("an unlocked note page serves the editor", s == 200 and b == b2)
+        check("a note page with spaces in it serves the editor too",
+              call(op, base + deep)[0] == 200)
+        check("a note page leaks no token", token not in b)
+        check("the api is still not a page", call(op, base + "/api/nope")[0] == 404)
     finally:
         p.terminate(); p.wait(timeout=5)
 
@@ -1538,6 +1610,7 @@ def main():
     try:
         test_state(vault, 8930)
         test_auth(vault, 8931)
+        test_note_pages(vault, 8941)
         test_read(vault, 8932)
         test_write(vault, 8933)
         test_path_safety(vault, 8934)

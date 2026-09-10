@@ -113,7 +113,7 @@ body[data-right="off"] #outline{display:none}
 .grp::after{content:"";flex:1;height:1px;background:var(--edge)}
 .item{display:flex;align-items:center;gap:7px;width:100%;text-align:left;
   padding:6px 14px 6px 13px;font-size:13.5px;line-height:1.35;background:none;border:0;
-  cursor:pointer;border-left:3px solid transparent;color:var(--ink)}
+  cursor:pointer;border-left:3px solid transparent;color:var(--ink);text-decoration:none}
 .item:hover{background:var(--sel)}
 .item.on{background:var(--accent-soft);border-left-color:var(--accent);font-weight:600}
 .item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1403,7 +1403,8 @@ function inline(s, ctx){
     const label  = (bar < 0 ? raw : raw.slice(bar + 1)).trim();
     const path = ctx.targets[target];
     return path
-      ? '<a class="wl" href="#" data-open="' + esc(path) + '">' + esc(label) + "</a>"
+      ? '<a class="wl" href="' + esc(noteHref(path)) + '" data-open="' + esc(path) + '">'
+        + esc(label) + "</a>"
       : '<span class="wl dead" title="no note called that">' + esc(label) + "</span>";
   });
   // markdown links, then bare urls
@@ -1692,7 +1693,11 @@ function drawBranch(node, depth, f, forceOpen){
   }
   for (const n of node.notes){
     const on = current && n.path === current.path;
-    const b = document.createElement("button");
+    /* A note row is an anchor, not a button, so it behaves like the link it is:
+       middle-click and cmd-click open it in a tab, and "copy link address"
+       gives an address that works. */
+    const b = document.createElement("a");
+    b.href = noteHref(n.path);
     b.className = "item" + (on ? " on" : "");
     b.style.paddingLeft = (13 + depth * 13) + "px";
     b.dataset.open = n.path;
@@ -1863,9 +1868,9 @@ function drawOutline(){
     for (const l of o.links){
       if (l.kind === "wiki"){
         const path = TARGETS[l.target];
-        const b = document.createElement("button");
+        const b = document.createElement(path ? "a" : "button");
         b.className = "o link" + (path ? "" : " dead");
-        if (path){ b.dataset.open = path; b.title = path; }
+        if (path){ b.dataset.open = path; b.href = noteHref(path); b.title = path; }
         else b.title = "no note called that";
         bit(b, "nm", l.label);
         bit(b, "host", "note");
@@ -2260,7 +2265,11 @@ liveEl.addEventListener("pointerdown", e => {
 
 liveEl.addEventListener("click", e => {
   const a = e.target.closest("a.wl[data-open]");
-  if (a){ e.preventDefault(); return open_(a.dataset.open); }
+  if (a){
+    if (!plainClick(e)) return;
+    e.preventDefault();
+    return open_(a.dataset.open);
+  }
   const b = e.target.closest("button[data-cb]");
   if (b) codeAction(b);
 });
@@ -2338,10 +2347,35 @@ function drawStats(){
     : "";
 }
 
-function open_(path){
-  if (dirty && !confirm("You have unsaved changes. Discard them?")) return;
+/* --------------------------- the address bar --------------------------- */
+/* Every note is a page of its own at /n/<its path in the vault>, which is what
+   makes the back button, a bookmark and a pasted link all work: the server
+   answers those the same as "/", and the editor opens whatever the address
+   names. */
+function noteHref(path){
+  return "/n/" + path.split("/").map(encodeURIComponent).join("/");
+}
+
+function pathInURL(){
+  if (!location.pathname.startsWith("/n/")) return "";
+  try { return decodeURIComponent(location.pathname.slice(3)); }
+  catch (e) { return ""; }                 /* a malformed escape names nothing */
+}
+
+/* `how` is "push" (the default — a click, so a step in history), "replace"
+   (the first note of the session, or one that stands in for a gone one) or
+   "back" (the address already moved; don't touch it). */
+function setAddress(n, how){
+  if (how === "back") return;
+  const href = noteHref(n.path);
+  const step = how !== "replace" && location.pathname !== href;
+  history[step ? "pushState" : "replaceState"]({path: n.path}, "", href);
+}
+
+function open_(path, how){
+  if (dirty && !confirm("You have unsaved changes. Discard them?")) return false;
   const n = NOTES.find(x => x.path === path);
-  if (!n) return;
+  if (!n) return false;
   showRefusal(null);                    /* it was about the note being left */
   current = n;
   edEl.value = n.raw;
@@ -2364,9 +2398,11 @@ function open_(path){
   mapS.paint();
   document.title = n.title + " — cairn";
   if (onHist()){ HIST_FOR = null; loadHistory(); }
+  setAddress(n, how);
   $("trashBtn").disabled = false;
   reveal(n.path);
   drawList(qEl.value);
+  return true;
 }
 
 async function save(){
@@ -2740,7 +2776,9 @@ async function trashNote(){
               r.uncommitted ? "error" : "saved");
     $("trashBtn").disabled = true;
     mapS.paint();
-    if (NOTES.length) open_(NOTES[0].path);
+    document.title = "cairn";
+    history.replaceState({}, "", "/");
+    if (NOTES.length) open_(NOTES[0].path, "replace");
   } catch (e){ setStatus(e.message, "error"); }
 }
 
@@ -3196,6 +3234,13 @@ async function codeAction(btn){
 }
 
 /* ---------------------------- wiring ---------------------------- */
+/* A note row and a wikilink are anchors now, so a click with a modifier (or of
+   the middle button) is the browser's to handle — a new tab, a new window —
+   and only a plain one is ours to turn into an open in place. */
+function plainClick(e){
+  return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+}
+
 listEl.addEventListener("click", e => {
   const f = e.target.closest("[data-fold]");
   if (f){
@@ -3205,12 +3250,16 @@ listEl.addEventListener("click", e => {
     return drawList(qEl.value);
   }
   const b = e.target.closest("[data-open]");
-  if (b) open_(b.dataset.open);
+  if (b && plainClick(e)){ e.preventDefault(); open_(b.dataset.open); }
 });
 
 $("outBody").addEventListener("click", e => {
   const b = e.target.closest("[data-open]");
-  if (b){ e.preventDefault(); return open_(b.dataset.open); }
+  if (b){
+    if (!plainClick(e)) return;
+    e.preventDefault();
+    return open_(b.dataset.open);
+  }
   const j = e.target.closest("[data-line]");
   if (j) gotoLine(+j.dataset.line);
 });
@@ -3227,7 +3276,11 @@ listEl.addEventListener("keydown", e => {
 });
 viewEl.addEventListener("click", e => {
   const a = e.target.closest("a.wl[data-open]");
-  if (a){ e.preventDefault(); open_(a.dataset.open); }
+  if (a){
+    if (!plainClick(e)) return;
+    e.preventDefault();
+    open_(a.dataset.open);
+  }
   const b = e.target.closest("button[data-cb]");
   if (b) codeAction(b);
 });
@@ -3330,6 +3383,18 @@ document.addEventListener("keydown", e => {
   }
 });
 
+/* The back and forward buttons move the address; this moves the editor to
+   match. A refused discard, or an address naming a note that is no longer
+   there, leaves the two disagreeing — so put the address back. */
+window.addEventListener("popstate", () => {
+  const want = pathInURL();
+  if (!want || (current && want === current.path)) return;
+  const gone = !NOTES.some(n => n.path === want);
+  if (open_(want, "back")) return;
+  if (gone) setStatus("there is no note at " + want, "error");
+  if (current) history.replaceState({path: current.path}, "", noteHref(current.path));
+});
+
 window.addEventListener("beforeunload", e => {
   if (dirty){ e.preventDefault(); e.returnValue = ""; }
 });
@@ -3354,9 +3419,19 @@ window.addEventListener("beforeunload", e => {
     animate(bootS, false);
     destroy(bootS);
     $("boot").remove();
-    const readme = NOTES.find(n => n.path === "README.md") || NOTES[0];
-    if (readme) open_(readme.path);
-    else setStatus("this vault has no notes yet — make one", "");
+    /* The address wins over the default note: a bookmark, a pasted link and a
+       reload all name the note they meant. */
+    const want = pathInURL();
+    const first = (want && NOTES.find(n => n.path === want))
+                || NOTES.find(n => n.path === "README.md") || NOTES[0];
+    if (first){
+      open_(first.path, "replace");
+      if (want && want !== first.path)
+        setStatus("there is no note at " + want + " — opened " + first.title, "error");
+    } else {
+      history.replaceState({}, "", "/");
+      setStatus("this vault has no notes yet — make one", "");
+    }
     redrawAll();
     /* After the notes are up: the panels are usable without it, and it is the
        one call that can spawn subprocesses on the server.                   */

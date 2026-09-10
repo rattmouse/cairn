@@ -85,6 +85,19 @@ Four parts, three of which you can put away:
 | Bottom | Always on. Left to right: where the vault is, the repository cairn keeps the notes in, and the backups. | — |
 | Activity | Inside the footer: every line of every command cairn has run, as it runs. | `Ctrl/⌘-J` |
 
+## Every note has an address
+
+A note is a page: opening one puts it in the address bar as
+`/n/<its path in the vault>`, so the back and forward buttons walk the notes
+you have read, a note can be bookmarked, and a link to one can be pasted into
+another program and will open that note. Rows in the tree, the wikilinks in
+the preview and the links in the outline are ordinary links — middle-click or
+`Ctrl/⌘-click` opens one in a new tab, and "copy link address" gives an
+address that works.
+
+A note page asks for the token like any other, and unlocking lands on the note
+that was asked for rather than the front page.
+
 ## Live mode
 
 The fourth button in the middle. The note reads exactly as the preview does,

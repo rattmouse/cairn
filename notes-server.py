@@ -60,6 +60,7 @@ Safety
 
 import argparse
 import hashlib
+import html
 import http.cookies
 import http.server
 import json
@@ -1835,6 +1836,18 @@ def cert_fingerprint(cert):
 # unlock page
 # --------------------------------------------------------------------------
 
+def note_route(raw):
+    """The route to send a browser back to, or "/" if it isn't one of ours.
+
+    Only "/" and /n/<note path> are pages, so anything else — an absolute URL,
+    a protocol-relative "//host", an API path — collapses to the root rather
+    than becoming a redirect to somewhere we didn't mean to send anyone."""
+    raw = (raw or "/").split("#")[0].split("?")[0]
+    if raw == "/n/" or not raw.startswith("/n/") or raw.startswith("/n//"):
+        return "/"
+    return "/" if "\\" in raw else raw
+
+
 UNLOCK = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Notes — unlock</title>
 <style>
@@ -1859,6 +1872,7 @@ button{margin-top:14px;width:100%;padding:10px;font:inherit;font-weight:600;back
 </style></head><body>
 <form method="POST" action="/unlock">
   <h1>Notes</h1>
+  <input type="hidden" name="next" value="__NEXT__">
   <p>Paste the token printed in the terminal where the server is running.</p>
   <label for="t">Token</label>
   <input id="t" name="token" autocomplete="off" autofocus spellcheck="false">
@@ -1976,11 +1990,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         % (CLIENT_COOKIE, secrets.token_urlsafe(12), secure)))
         return out
 
-    def unlock_page(self, err=""):
-        html = UNLOCK.replace("__ERR__", err)
+    def unlock_page(self, err="", nxt="/"):
+        page = UNLOCK.replace("__ERR__", err).replace("__NEXT__",
+                                                      html.escape(nxt, quote=True))
         risky = self.server.exposed and not self.server.tls
-        html = html.replace("__WARN__", INSECURE_WARN if risky else "")
-        self.send(200, html, "text/html; charset=utf-8")
+        page = page.replace("__WARN__", INSECURE_WARN if risky else "")
+        self.send(200, page, "text/html; charset=utf-8")
 
     def body_bytes(self, limit=8 * 1024 * 1024):
         length = int(self.headers.get("Content-Length") or 0)
@@ -1999,13 +2014,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             return self.send(204, b"", "image/x-icon")
 
-        if path == "/":
+        # "/" and every /n/<note path> are the same page: the editor decides
+        # which note to open from the address, so a note can be linked to,
+        # bookmarked, and reached with the back button.
+        if path == "/" or path.startswith("/n/"):
             if not self.authed():
-                return self.unlock_page()
+                return self.unlock_page(nxt=note_route(url.path))
             # Token arrived in the URL: convert it to a cookie and drop it from
             # the address bar so it never lands in history.
             if self.query_token():
-                return self.redirect("/", self.set_session())
+                return self.redirect(note_route(url.path), self.set_session())
             try:
                 html = open(EDITOR_HTML, encoding="utf-8").read()
             except OSError:
@@ -2014,7 +2032,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send(200, html, "text/html; charset=utf-8", self.set_session())
 
         if path == "/unlock":
-            return self.unlock_page()
+            return self.unlock_page(nxt=note_route(
+                urllib.parse.parse_qs(url.query).get("next", ["/"])[0]))
 
         if path == "/api/notes":
             if not self.authed():
@@ -2210,12 +2229,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError):
                 return self.unlock_page("Malformed request.")
             given = (form.get("token") or [""])[0].strip()
+            nxt = note_route((form.get("next") or ["/"])[0])
             if secrets.compare_digest(given, TOKEN):
                 self.log_message("unlocked")
-                return self.redirect("/", self.set_session())
+                return self.redirect(nxt, self.set_session())
             time.sleep(0.7)                      # blunt the guessing rate
             self.log_message("FAILED unlock attempt")
-            return self.unlock_page("That token doesn't match. Check the terminal.")
+            return self.unlock_page("That token doesn't match. Check the terminal.",
+                                    nxt)
 
         if not self.authed():
             return self.fail(403, "not unlocked")
