@@ -7,7 +7,8 @@ Tests for the cairn server. Standard library only — no pytest, no playwright.
 Builds a throwaway vault in a temp directory, starts the real server against
 it on a scratch port, and exercises the HTTP surface. Never touches your notes.
 
-These cover the server: auth, path safety, writes, backups, conflicts, TLS.
+These cover the server: auth, path safety, writes, the git repository cairn
+keeps them in, conflicts, TLS.
 The browser side (markdown rendering, editor interactions) is NOT covered
 here — see CLAUDE.md, "Testing", for what that would take.
 """
@@ -118,6 +119,19 @@ def state_dir(log):
     """The state directory the server announced in its banner."""
     m = re.search(r"(?m)^  state : (.+)$", log)
     return m.group(1).strip() if m else ""
+
+
+def git(vault, *args):
+    """One git command in a test vault, as a stripped string."""
+    p = subprocess.run(("git", "-C", vault) + args, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, text=True)
+    return p.stdout.strip()
+
+
+def git_init(path, email="t@example.com", name="Test"):
+    for args in (("init", "-q", "-b", "main"), ("config", "user.email", email),
+                 ("config", "user.name", name)):
+        git(path, *args)
 
 
 def outside(path, vault):
@@ -307,11 +321,12 @@ def test_write(vault, port):
         check("save writes to disk", s == 200 and "added" in disk)
         check("save stamps updated:", "updated: 2020-01-01" not in disk)
 
-        kept = json.loads(b)["backup"]
-        check("backup recorded", bool(kept), str(kept))
-        check("backup lives outside the vault", outside(kept, vault), str(kept))
-        check("backup holds the pre-edit version",
-              open(kept, encoding="utf-8").read() == original)
+        # History is git now, not .backups/ — the commit is checked in
+        # test_git; here it is enough that the save reports the sha it made.
+        sha = json.loads(b).get("commit")
+        check("save reports the commit it made", bool(sha), str(sha))
+        check("nothing is written to a backups directory",
+              not os.path.isdir(os.path.join(vault, ".backups")))
 
         # stale mtime must be refused
         stale = json.dumps({"path": alpha["path"], "content": "clobbered",
@@ -344,6 +359,10 @@ def test_write(vault, port):
         check("trash keeps the note's folder",
               os.path.basename(os.path.dirname(moved)) == "Notes"
               and os.path.basename(moved).startswith("Gamma."))
+        check("the removal is committed too",
+              json.loads(b).get("uncommitted") is None
+              and git(vault, "log", "-1", "--format=%s") == "Delete Gamma",
+              git(vault, "log", "-1", "--format=%s"))
     finally:
         p.terminate(); p.wait(timeout=5)
 
@@ -600,111 +619,372 @@ def test_cert_download(vault, port):
         p.terminate(); p.wait(timeout=5)
 
 
-def test_sync(vault, port):
-    print("\nsync command")
+def test_git(vault, port):
+    """The repository cairn owns: a commit per save, and a refusal that
+    leaves nothing behind."""
+    print("\ngit")
 
-    # Point the server's state file at a scratch directory. Without this the
-    # test would overwrite the real ~/.local/state/cairn/sync.json.
-    state = tempfile.mkdtemp(prefix="cairn-test-state-")
-    env = dict(os.environ, XDG_STATE_HOME=state)
-    marker = os.path.join(state, "ran.txt")
+    if not shutil.which("git"):
+        check("git is installed to test against", False, "skipped")
+        return
 
-    good = os.path.join(state, "sync-ok.sh")
-    with open(good, "w") as f:
-        f.write("#!/bin/sh\n"
-                "echo \"argc=$#\" > %s\n"
-                "echo \"args=$*\" >> %s\n"
-                "echo \"cwd=$PWD\" >> %s\n"
-                "echo synced\n" % (marker, marker, marker))
-    os.chmod(good, 0o755)
-
-    bad = os.path.join(state, "sync-bad.sh")
-    with open(bad, "w") as f:
-        f.write("#!/bin/sh\necho 'it went wrong' >&2\nexit 3\n")
-    os.chmod(bad, 0o755)
-
-    # --- off unless asked for ------------------------------------------
-    p, token, _ = start(vault, port, env=env)
+    p, token, log = start(vault, port)
     try:
-        op, _jar = client()
+        op, _ = client()
         base = "http://127.0.0.1:%d" % port
         form(op, base, token)
-        code, body = call(op, base + "/api/sync", data=b"", method="POST")
-        check("POST /api/sync is 404 without --sync-cmd", code == 404, code)
-        code, body = call(op, base + "/api/sync/status")
-        check("status reports disabled without --sync-cmd",
-              code == 200 and json.loads(body)["sync"]["enabled"] is False)
+
+        branch = git(vault, "rev-parse", "--abbrev-ref", "HEAD")
+        check("the vault is a repository", os.path.isdir(os.path.join(vault, ".git")))
+        check("checked out on a branch named for this machine",
+              branch.startswith("host/"), branch)
+        check("the branch is announced", "branch: " + branch in log, branch)
+        check("the tree agrees with HEAD at startup",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+
+        # --- one save, one commit ------------------------------------
+        s_, b = call(op, base + "/api/notes")
+        alpha = next(n for n in json.loads(b)["notes"] if n["title"] == "Alpha")
+        before = int(git(vault, "rev-list", "--count", "HEAD"))
+        body = json.dumps({"path": alpha["path"], "content": alpha["raw"] + "\none\n",
+                           "mtime": alpha["mtime"]}).encode()
+        s_, b = call(op, base + "/api/note", data=body, method="PUT",
+                     headers={"Content-Type": "application/json"})
+        after = int(git(vault, "rev-list", "--count", "HEAD"))
+        check("a save makes exactly one commit", after == before + 1,
+              "%d -> %d" % (before, after))
+        check("the commit says what it did",
+              git(vault, "log", "-1", "--format=%s") == "Update Alpha",
+              git(vault, "log", "-1", "--format=%s"))
+        check("the note's path is in the commit body",
+              alpha["path"] in git(vault, "log", "-1", "--format=%b"))
+        check("the working tree is clean afterwards",
+              git(vault, "status", "--porcelain") == "")
+        check("the save reports the sha",
+              json.loads(b)["commit"] == git(vault, "log", "-1", "--format=%h"))
+
+        # A save that changes nothing is a success with nothing to record.
+        note = json.loads(call(op, base + "/api/notes")[1])["notes"]
+        alpha = next(n for n in note if n["title"] == "Alpha")
+        same = json.dumps({"path": alpha["path"], "content": alpha["raw"],
+                           "mtime": alpha["mtime"], "stamp": False}).encode()
+        n_before = int(git(vault, "rev-list", "--count", "HEAD"))
+        s_, _ = call(op, base + "/api/note", data=same, method="PUT",
+                     headers={"Content-Type": "application/json"})
+        check("re-saving identical bytes commits nothing",
+              s_ == 200 and int(git(vault, "rev-list", "--count", "HEAD")) == n_before)
+
+        # --- a new note is committed too -----------------------------
+        s_, _ = call(op, base + "/api/new",
+                     data=json.dumps({"path": "Notes/Fresh.md", "title": "Fresh"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("/api/new commits the note it created",
+              git(vault, "log", "-1", "--format=%s") == "Add Fresh",
+              git(vault, "log", "-1", "--format=%s"))
+
+        # --- concurrent saves serialize rather than racing the index --
+        # Two threads, two notes, one index. Without the lock this is where
+        # git would report "index.lock: File exists" and lose a commit.
+        listing = json.loads(call(op, base + "/api/notes")[1])["notes"]
+        pair = [n for n in listing if n["title"] in ("Alpha", "Fresh")]
+        n_before = int(git(vault, "rev-list", "--count", "HEAD"))
+        results = []
+
+        def press(n):
+            op2, _ = client()
+            form(op2, base, token)
+            results.append(call(op2, base + "/api/note",
+                                data=json.dumps({"path": n["path"],
+                                                 "content": n["raw"] + "\nboth\n",
+                                                 "mtime": n["mtime"]}).encode(),
+                                method="PUT",
+                                headers={"Content-Type": "application/json"})[0])
+
+        threads = [threading.Thread(target=press, args=(n,)) for n in pair]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        check("concurrent saves both succeed", results == [200, 200], results)
+        check("and both are committed, one commit each",
+              int(git(vault, "rev-list", "--count", "HEAD")) == n_before + 2,
+              git(vault, "log", "-3", "--format=%s"))
+        check("with nothing left staged or dirty",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
     finally:
         p.terminate(); p.wait(timeout=5)
 
-    # --- refuses a command it cannot run, at startup --------------------
-    p, token, log = start(vault, port, extra=("--sync-cmd", os.path.join(state, "nope.sh")),
-                          env=env)
-    p.wait(timeout=10)
-    check("exits when --sync-cmd is missing", p.returncode != 0)
+    # --- the hook can refuse a save ----------------------------------
+    # The vault this was built for has a pre-commit hook that blocks
+    # credential-shaped strings, and cairn must never pass --no-verify. A
+    # refused save has to leave *nothing*: no commit, no half-written file.
+    hook = os.path.join(vault, ".git", "hooks", "pre-commit")
+    with open(hook, "w") as f:
+        f.write("#!/bin/sh\n"
+                "git diff --cached | grep -q NOT-A-REAL-TOKEN || exit 0\n"
+                "echo 'BLOCKED: Notes/Alpha.md:7 looks like a credential' >&2\n"
+                "exit 1\n")
+    os.chmod(hook, 0o755)
 
-    plain = os.path.join(state, "not-exec.sh")
-    with open(plain, "w") as f:
-        f.write("#!/bin/sh\ntrue\n")
-    os.chmod(plain, 0o644)
-    p, token, log = start(vault, port, extra=("--sync-cmd", plain), env=env)
-    p.wait(timeout=10)
-    check("exits when --sync-cmd is not executable", p.returncode != 0)
-
-    # --- enabled -------------------------------------------------------
-    p, token, _ = start(vault, port, extra=("--sync-cmd", good), env=env)
+    p, token, _ = start(vault, port)
     try:
-        op, _jar = client()
+        op, _ = client()
         base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        listing = json.loads(call(op, base + "/api/notes")[1])["notes"]
+        alpha = next(n for n in listing if n["title"] == "Alpha")
+        head = git(vault, "rev-parse", "HEAD")
+        was = open(os.path.join(vault, alpha["path"]), encoding="utf-8").read()
 
-        # Auth first: this route runs a subprocess, so it must be behind the
-        # token like everything else.
+        s_, b = call(op, base + "/api/note",
+                     data=json.dumps({"path": alpha["path"],
+                                      "content": was + "\nNOT-A-REAL-TOKEN\n",
+                                      "mtime": alpha["mtime"]}).encode(),
+                     method="PUT", headers={"Content-Type": "application/json"})
+        r = json.loads(b)
+        now = open(os.path.join(vault, alpha["path"]), encoding="utf-8").read()
+        check("a refused save answers 422", s_ == 422, s_)
+        check("it carries the hook's own words",
+              "looks like a credential" in (r.get("refused") or ""), r.get("refused"))
+        check("the note is byte-for-byte what it was", now == was)
+        check("and that is what the client is told it has",
+              r.get("content") == was)
+        check("no commit was made", git(vault, "rev-parse", "HEAD") == head)
+        check("nothing is left staged", git(vault, "diff", "--cached", "--name-only") == "")
+        check("and nothing is left dirty", git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+
+        # A brand-new note the hook refuses must not survive either.
+        s_, b = call(op, base + "/api/new",
+                     data=json.dumps({"path": "Notes/NOT-A-REAL-TOKEN.md",
+                                      "title": "NOT-A-REAL-TOKEN"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("a refused new note answers 422", s_ == 422, s_)
+        check("and leaves no file behind",
+              not os.path.exists(os.path.join(vault, "Notes", "NOT-A-REAL-TOKEN.md")))
+        check("still no commit", git(vault, "rev-parse", "HEAD") == head)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        os.remove(hook)
+
+    # --- a dirty tree at startup is adopted, in one commit -------------
+    with open(os.path.join(vault, "Notes", "Outside.md"), "w") as f:
+        f.write("# Outside\n\nWritten by something that is not cairn.\n")
+    before = int(git(vault, "rev-list", "--count", "HEAD"))
+    p, token, log = start(vault, port)
+    try:
+        check("a tree that was dirty at startup is committed",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+        check("in a single commit that says so",
+              int(git(vault, "rev-list", "--count", "HEAD")) == before + 1
+              and git(vault, "log", "-1", "--format=%s") == "Adopt changes made outside cairn",
+              git(vault, "log", "-1", "--format=%s"))
+        check("and it is announced", "already in the vault" in log)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # --- no git without git ------------------------------------------
+    bare_path = dict(os.environ, XDG_STATE_HOME=STATE, PATH="/nonexistent")
+    p, _, log = start(vault, port, env=bare_path)
+    p.wait(timeout=10)
+    check("without git on PATH, cairn refuses to start",
+          p.returncode != 0 and "git is not on PATH" in log, log.strip()[-120:])
+
+    # --- every git command is scoped to the vault ---------------------
+    # Read off the module rather than a subprocess: the property is that no
+    # command can run anywhere else, and that lives in one function.
+    srv = load_server()
+    srv.VAULT = vault
+    seen = []
+
+    class Fake:
+        returncode = 0
+        stdout = ""
+
+    real = srv.subprocess.run
+    srv.subprocess.run = lambda argv, **kw: (seen.append(argv), Fake())[1]
+    try:
+        srv.git("status", "--porcelain")
+        srv._git("log", "-1")
+    finally:
+        srv.subprocess.run = real
+    check("every git command is run inside the vault",
+          bool(seen) and all(tuple(a[:3]) == ("git", "-C", vault) for a in seen),
+          seen[:1])
+    check("and none of them goes through a shell",
+          all(isinstance(a, tuple) and "shell" not in str(a) for a in seen))
+
+
+def test_sync(vault, port):
+    """Sync: this machine's branch out, the other machines' branches in."""
+    print("\nsync")
+
+    if not shutil.which("git"):
+        check("git is installed to test against", False, "skipped")
+        return
+
+    state = tempfile.mkdtemp(prefix="cairn-test-state-")
+    env = dict(os.environ, XDG_STATE_HOME=state)
+
+    # --- off, and refused, until there is somewhere to sync to ---------
+    p, token, _ = start(vault, port, env=env)
+    try:
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % port
         code, _ = call(op, base + "/api/sync", data=b"", method="POST")
         check("POST /api/sync refused when locked", code == 403, code)
         code, _ = call(op, base + "/api/sync/status")
         check("sync status refused when locked", code == 403, code)
-
         form(op, base, token)
-
-        # The request body is attacker-shaped: if any of it reached the
-        # command line, argc would not be 0.
-        payload = json.dumps({"cmd": "rm -rf /", "args": ["--delete"],
-                              "path": "; touch /tmp/pwned"}).encode()
-        code, body = call(op, base + "/api/sync", data=payload, method="POST",
-                          headers={"Content-Type": "application/json"})
-        ok = code == 200 and json.loads(body)["sync"]["ok"] is True
-        check("sync runs the configured command", ok, code)
-
-        ran = open(marker).read() if os.path.isfile(marker) else ""
-        check("the command actually ran", "cwd=" in ran)
-        check("no arguments from the request reach it", "argc=0" in ran, ran.split("\n")[0])
-        # $PWD on a Mac is /private/var/..., the resolved form of the temp dir.
-        check("it runs in the vault",
-              "cwd=%s" % vault in ran or "cwd=%s" % os.path.realpath(vault) in ran)
-
+        code, body = call(op, base + "/api/sync", data=b"", method="POST")
+        check("POST /api/sync is 404 with no origin remote", code == 404, code)
+        check("and says why", "origin" in body, body[:80])
         code, body = call(op, base + "/api/sync/status")
         st = json.loads(body)["sync"]
-        check("status reports enabled", st["enabled"] is True)
-        check("status records the last run", bool(st["last"]) and st["last"]["ok"] is True)
-        check("status has no next run without --sync-timer", st["next"] is None)
+        check("status reports sync disabled with no origin", st["enabled"] is False)
+        check("but still names the branch it would push",
+              (st["branch"] or "").startswith("host/"), st.get("branch"))
     finally:
         p.terminate(); p.wait(timeout=5)
 
-    # --- a failing script is reported, not swallowed --------------------
-    p, token, _ = start(vault, port, extra=("--sync-cmd", bad), env=env)
+    # --- a bare repository is the transport ----------------------------
+    home = tempfile.mkdtemp(prefix="cairn-test-remote-")
+    bare = os.path.join(home, "notes.git")
+    subprocess.run(("git", "init", "-q", "--bare", bare),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    git(vault, "remote", "add", "origin", bare)
+
+    p, token, _ = start(vault, port, env=env)
     try:
-        op, _jar = client()
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        branch = git(vault, "rev-parse", "--abbrev-ref", "HEAD")
+
+        # The request body is attacker-shaped. Nothing in it can reach git:
+        # every command is a fixed argv list built here, not there.
+        payload = json.dumps({"cmd": "rm -rf /", "branch": "; touch /tmp/pwned",
+                              "args": ["--force"]}).encode()
+        code, body = call(op, base + "/api/sync", data=payload, method="POST",
+                          headers={"Content-Type": "application/json"})
+        rec = json.loads(body)["sync"] if code == 200 else {}
+        check("a sync with a remote runs", code == 200 and rec.get("ok") is True,
+              rec.get("output", code))
+        check("nothing from the request reaches git",
+              not os.path.exists("/tmp/pwned")
+              and "rm -rf" not in rec.get("output", ""))
+        check("this machine's branch is on the remote",
+              branch in subprocess.run(("git", "-C", bare, "branch", "--list"),
+                                       stdout=subprocess.PIPE, text=True).stdout,
+              branch)
+        check("the run is recorded", json.loads(
+            call(op, base + "/api/sync/status")[1])["sync"]["last"]["ok"] is True)
+
+        # --- another machine's branch is merged back ------------------
+        peer = os.path.join(home, "peer")
+        subprocess.run(("git", "clone", "-q", bare, peer),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        git_init_peer = (("config", "user.email", "p@example.com"),
+                         ("config", "user.name", "Peer"),
+                         ("checkout", "-q", "-b", "host/other", "origin/" + branch))
+        for args in git_init_peer:
+            git(peer, *args)
+        note = os.path.join(peer, "Notes", "Shared.md")
+        os.makedirs(os.path.dirname(note), exist_ok=True)
+        with open(note, "w") as f:
+            f.write("# Shared\n\nfrom the other machine\n")
+        git(peer, "add", "-A")
+        git(peer, "commit", "-qm", "Add Shared")
+        git(peer, "push", "-q", "origin", "host/other")
+
+        code, body = call(op, base + "/api/sync", data=b"", method="POST")
+        rec = json.loads(body)["sync"]
+        check("a peer's branch is merged in", rec["ok"] is True
+              and os.path.isfile(os.path.join(vault, "Notes", "Shared.md")),
+              rec["output"][-200:])
+        check("the merge is pushed back",
+              subprocess.run(("git", "-C", bare, "log", "-1", "--format=%s", branch),
+                             stdout=subprocess.PIPE, text=True).stdout.strip() ==
+              git(vault, "log", "-1", "--format=%s"))
+        code, body = call(op, base + "/api/status")
+        check("the footer is told how many other machines there are",
+              json.loads(body)["sync"]["peers"] == 1, json.loads(body)["sync"]["peers"])
+
+        # --- the later writer wins, whichever machine that is ---------
+        # The peer writes, then this machine writes. Merging with -X theirs
+        # would hand it to the peer; ordering is what makes it the later one.
+        conflict = "Notes/Shared.md"
+        with open(os.path.join(peer, conflict), "w") as f:
+            f.write("# Shared\n\nPEER WROTE THIS\n")
+        git(peer, "commit", "-qam", "Update Shared")
+        git(peer, "push", "-q", "origin", "host/other")
+        time.sleep(1.1)                       # commit times are whole seconds
+        listing = json.loads(call(op, base + "/api/notes")[1])["notes"]
+        shared = next(n for n in listing if n["path"].endswith("Shared.md"))
+        call(op, base + "/api/note",
+             data=json.dumps({"path": shared["path"],
+                              "content": "# Shared\n\nTHIS MACHINE WROTE THIS\n",
+                              "mtime": shared["mtime"], "stamp": False}).encode(),
+             method="PUT", headers={"Content-Type": "application/json"})
+        code, body = call(op, base + "/api/sync", data=b"", method="POST")
+        rec = json.loads(body)["sync"]
+        text = open(os.path.join(vault, conflict), encoding="utf-8").read()
+        check("this machine wrote last, so this machine's line survives",
+              rec["ok"] is True and "THIS MACHINE" in text, text.strip()[-60:])
+        check("and the losing version is still in the history",
+              "PEER WROTE THIS" in git(vault, "log", "-p", "--all"))
+
+        # Now the other way round: the peer writes after this machine.
+        time.sleep(1.1)
+        with open(os.path.join(peer, conflict), "w") as f:
+            f.write("# Shared\n\nPEER WROTE THIS LAST\n")
+        git(peer, "fetch", "-q", "origin")
+        git(peer, "merge", "-q", "--no-edit", "-X", "ours", "origin/" + branch)
+        with open(os.path.join(peer, conflict), "w") as f:
+            f.write("# Shared\n\nPEER WROTE THIS LAST\n")
+        git(peer, "commit", "-qam", "Update Shared")
+        git(peer, "push", "-q", "origin", "host/other")
+        code, body = call(op, base + "/api/sync", data=b"", method="POST")
+        rec = json.loads(body)["sync"]
+        text = open(os.path.join(vault, conflict), encoding="utf-8").read()
+        check("the peer wrote last, so the peer's line survives",
+              rec["ok"] is True and "PEER WROTE THIS LAST" in text, text.strip()[-60:])
+
+        # --- the transcript reaches the activity panel ----------------
+        code, body = call(op, base + "/api/run/log?since=0")
+        lines = [l["text"] for l in json.loads(body)["lines"]]
+        check("the activity panel sees the git commands",
+              any(l.startswith("git push") for l in lines)
+              and any(l.startswith("git fetch") for l in lines), lines[:3])
+        check("and a line for the run finishing",
+              any("finished in" in l for l in lines))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # --- a sync that cannot reach its remote is reported, not swallowed
+    git(vault, "remote", "set-url", "origin", os.path.join(home, "gone.git"))
+    p, token, _ = start(vault, port, env=env)
+    try:
+        op, _ = client()
         base = "http://127.0.0.1:%d" % port
         form(op, base, token)
         code, body = call(op, base + "/api/sync", data=b"", method="POST")
         rec = json.loads(body)["sync"]
         check("a failing sync still answers 200", code == 200, code)
         check("a failing sync is marked not ok", rec["ok"] is False)
-        check("the exit code is passed through", rec["code"] == 3, rec["code"])
-        check("its output is kept for the user", "went wrong" in rec["output"])
+        check("its output is kept for the user", "gone.git" in rec["output"],
+              rec["output"][-120:])
+        check("the vault is left on its own branch, clean",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
     finally:
         p.terminate(); p.wait(timeout=5)
 
+    git(vault, "remote", "remove", "origin")
+    shutil.rmtree(home, ignore_errors=True)
     shutil.rmtree(state, ignore_errors=True)
 
 
@@ -716,14 +996,7 @@ def test_status(vault, port):
     state = tempfile.mkdtemp(prefix="cairn-test-state-")
     env = dict(os.environ, XDG_STATE_HOME=state)
 
-    # A script that says three things with a pause in the middle, so the log
-    # can be watched filling up rather than arriving all at once at the end.
-    talker = os.path.join(state, "talks.sh")
-    with open(talker, "w") as f:
-        f.write("#!/bin/sh\necho first\nsleep 2\necho second\n")
-    os.chmod(talker, 0o755)
-
-    p, token, log = start(vault, port, extra=("--sync-cmd", talker), env=env)
+    p, token, log = start(vault, port, env=env)
     where = state_dir(log)
     try:
         op, _jar = client()
@@ -743,11 +1016,16 @@ def test_status(vault, port):
               all(k in st for k in ("sync", "git", "cloud")))
         check("and the version the page shows in its footer",
               re.match(r"^\d+\.\d+\.\d+$", st.get("version") or ""), st.get("version"))
-        # The temp vault is not a repository and not in anyone's sync folder.
-        # Both are "no", and saying so is the point -- a missing key would
-        # leave the footer unable to tell absent from broken.
-        check("git reports no repository", st.get("git", {}).get("repo") is False,
-              st.get("git"))
+        # cairn made this a repository itself at startup. The temp vault is
+        # still nobody's sync folder, and saying so is the point -- a missing
+        # key would leave the footer unable to tell absent from broken.
+        check("git reports the repository cairn keeps",
+              st.get("git", {}).get("repo") is True, st.get("git"))
+        check("on this machine's branch",
+              (st.get("git", {}).get("branch") or "").startswith("host/"),
+              st.get("git", {}).get("branch"))
+        check("with no origin, so no sync",
+              st["git"]["remote"] is None and st["sync"]["enabled"] is False)
         check("no sync folder is detected",
               st.get("cloud", {}).get("detected") is False, st.get("cloud"))
 
@@ -755,35 +1033,68 @@ def test_status(vault, port):
         log = json.loads(body)
         check("the log starts empty", log["lines"] == [] and log["seq"] == 0)
         check("nothing is running", log["running"] is False)
+    finally:
+        p.terminate(); p.wait(timeout=5)
 
-        # --- a run is visible while it is still going ------------------
+    # --- a run is visible while it is still going ----------------------
+    # A pre-commit hook that sleeps is the honest way to hold a sync open:
+    # the run really is in flight, and the panel really is being polled.
+    home = tempfile.mkdtemp(prefix="cairn-test-remote-")
+    bare = os.path.join(home, "notes.git")
+    subprocess.run(("git", "init", "-q", "--bare", bare),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    git(vault, "remote", "add", "origin", bare)
+    hook = os.path.join(vault, ".git", "hooks", "pre-commit")
+    with open(hook, "w") as f:
+        f.write("#!/bin/sh\nsleep 3\n")
+    os.chmod(hook, 0o755)
+    with open(os.path.join(vault, "Notes", "Slow.md"), "w") as f:
+        f.write("# Slow\n\nSomething for the sync to commit.\n")
+
+    p, token, log = start(vault, port, env=env)
+    where = state_dir(log)
+    try:
+        op, _jar = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        # Startup adopted the dirty tree through the slow hook already; make
+        # it dirty again so the sync itself has something to commit.
+        with open(os.path.join(vault, "Notes", "Slow.md"), "a") as f:
+            f.write("\nAnd another line.\n")
+
         done = []
+
         def press():
-            done.append(call(op, base + "/api/sync", data=b"", method="POST"))
+            op2, _ = client()
+            form(op2, base, token)
+            done.append(call(op2, base + "/api/sync", data=b"", method="POST"))
+
         t = threading.Thread(target=press)
         t.start()
 
-        seen, running, deadline = [], False, time.time() + 8
+        seen, running, deadline = [], False, time.time() + 10
         while time.time() < deadline and not done:
             code, body = call(op, base + "/api/run/log?since=0")
             r = json.loads(body)
             seen = [l["text"] for l in r["lines"]]
             running = running or r["running"]
-            if "first" in seen:
+            if any("sync on host/" in l for l in seen):
                 break
             time.sleep(0.2)
 
-        check("the first line arrives before the command ends",
-              "first" in seen and not done, "lines=%s finished=%s" % (seen, bool(done)))
+        check("the first line arrives before the sync ends",
+              any("sync on host/" in l for l in seen) and not done,
+              "lines=%s finished=%s" % (seen[:2], bool(done)))
         check("a run in flight is reported as running", running)
-        t.join(timeout=20)
+        t.join(timeout=40)
 
         code, body = call(op, base + "/api/run/log?since=0")
         r = json.loads(body)
         texts = [l["text"] for l in r["lines"]]
         kinds = [l["kind"] for l in r["lines"]]
-        check("both lines are in the log", "first" in texts and "second" in texts, texts)
-        check("the command itself opens the log", kinds and kinds[0] == "start", kinds)
+        check("the whole transcript is in the log",
+              any(l.startswith("git push") for l in texts), texts[:3])
+        check("the run opens the log", kinds and kinds[0] == "start", kinds[:1])
         check("the run is marked finished", "end" in kinds, kinds)
         check("nothing is running afterwards", r["running"] is False)
 
@@ -807,12 +1118,14 @@ def test_status(vault, port):
               not os.path.isfile(os.path.join(state, "cairn", "sync.json")))
     finally:
         p.terminate(); p.wait(timeout=5)
-
-    shutil.rmtree(state, ignore_errors=True)
+        os.remove(hook)
+        git(vault, "remote", "remove", "origin")
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(state, ignore_errors=True)
 
 
 def test_status_in_repo(vault, port):
-    """A vault that is inside a git repository, and inside a sync folder."""
+    """A vault inside a provider's sync folder, with a history of its own."""
     print("\nstatus in a repo")
 
     if not shutil.which("git"):
@@ -827,13 +1140,13 @@ def test_status_in_repo(vault, port):
     os.makedirs(repo)
     with open(os.path.join(repo, "Note.md"), "w") as f:
         f.write("# Note\n")
-    git = ("git", "-C", repo)
-    quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(git + ("init", "-q"), **quiet)
-    subprocess.run(git + ("config", "user.email", "t@example.com"), **quiet)
-    subprocess.run(git + ("config", "user.name", "Test"), **quiet)
-    subprocess.run(git + ("add", "-A"), **quiet)
-    subprocess.run(git + ("commit", "-qm", "First note"), **quiet)
+    git_init(repo)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "First note")
+    # Edited and added since that commit: cairn adopts both at startup rather
+    # than serving a tree that disagrees with the history it is about to add
+    # to. A save that carried someone else's half-finished edit along with it
+    # would make "one save, one commit" a lie.
     with open(os.path.join(repo, "Note.md"), "a") as f:
         f.write("\nEdited since the commit.\n")
     with open(os.path.join(repo, "Fresh.md"), "w") as f:
@@ -848,13 +1161,17 @@ def test_status_in_repo(vault, port):
 
         g = st["git"]
         check("the repository is found", g["repo"] is True)
-        check("the branch is named", bool(g["branch"]), g.get("branch"))
-        check("a modified note is counted", g["changed"] == 1, g["changed"])
-        check("a new note is counted separately", g["untracked"] == 1, g["untracked"])
-        check("a dirty tree is not clean", g["clean"] is False)
-        check("there is no upstream to be ahead of", g["upstream"] is None)
-        check("the last commit is reported", g["last"]["subject"] == "First note",
+        check("cairn moved it onto a branch of its own",
+              (g["branch"] or "").startswith("host/"), g.get("branch"))
+        check("the existing history is still there",
+              "First note" in git(repo, "log", "--format=%s"))
+        check("the edits made outside cairn were adopted",
+              g["changed"] == 0 and g["untracked"] == 0, (g["changed"], g["untracked"]))
+        check("so the tree is clean", g["clean"] is True)
+        check("the adopting commit is the one reported",
+              g["last"]["subject"] == "Adopt changes made outside cairn",
               g.get("last"))
+        check("there is no upstream to be ahead of", g["upstream"] is None)
 
         c = st["cloud"]
         check("the sync folder is detected", c["detected"] is True)
@@ -865,6 +1182,18 @@ def test_status_in_repo(vault, port):
         check("where the vault sits inside it", c["inside"] == "vault", c.get("inside"))
     finally:
         p.terminate(); p.wait(timeout=5)
+
+    # --- a vault below a repository's root is refused -------------------
+    # cairn commits on a branch per machine; doing that to a repository the
+    # vault only sits inside would move a branch that is not cairn's to move.
+    nested = os.path.join(repo, "inner")
+    os.makedirs(nested)
+    with open(os.path.join(nested, "Deep.md"), "w") as f:
+        f.write("# Deep\n")
+    p, _, log = start(nested, port)
+    p.wait(timeout=10)
+    check("a vault below the repository root is refused",
+          p.returncode != 0 and "not at its root" in log, log.strip()[-120:])
 
     shutil.rmtree(home, ignore_errors=True)
 
@@ -1091,6 +1420,7 @@ def main():
         test_token_persists(vault, 8955)
         test_cert_download(vault, 8960)
         test_terminal(vault, 8936)
+        test_git(vault, 8951)
         test_sync(vault, 8937)
         test_status(vault, 8938)
         test_status_in_repo(vault, 8939)

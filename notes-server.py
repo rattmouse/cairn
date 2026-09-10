@@ -16,7 +16,8 @@ Serving a vault that lives somewhere else:
 
 Stop it with Ctrl-C.
 
-Python standard library only: no pip install, no dependencies, no internet.
+Python standard library and git: no pip install, no npm, no build step, no
+internet.
 
 How access works
 ----------------
@@ -37,12 +38,17 @@ Safety
   everything -- your notes and the token -- crosses the network in the clear,
   readable by anyone else on the same wifi.
 * Writes are atomic (temp file + os.replace), so an interrupted save can't
-  leave a half-written note.
-* The previous version of every note you save is kept in backups/, and
-  deleting moves the file to trash/ -- nothing is actually unlinked. Both
-  live in a per-vault state directory OUTSIDE the vault (see --state-dir),
-  so a vault in a sync folder doesn't upload every old version, and a
-  delete actually leaves the cloud. The TLS key lives there too.
+  leave a half-written note, and each one is committed to the vault's own git
+  repository in the same breath: both, or neither. Every version of every
+  note is in `git log`, on a branch named for this machine.
+* If the vault's repository has a pre-commit hook, it can refuse a save --
+  paste an API key into a note and nothing reaches disk. cairn never passes
+  --no-verify.
+* Deleting moves the file to trash/ AND commits the removal. Trash is an
+  undelete button; git is the record. trash/ and the TLS key live in a
+  per-vault state directory OUTSIDE the vault (see --state-dir), so a vault
+  in a sync folder doesn't keep "deleted" notes synced forever and doesn't
+  mirror the private key to the provider.
 * Paths are resolved and checked against the vault root, so a crafted request
   can't read or write outside it, and only .md files can be written.
 """
@@ -83,13 +89,17 @@ STATE_HOME = os.path.join(
                                                      ".local", "state"),
     "cairn")
 
-# Backups, trash and the TLS key are deliberately NOT written into the vault.
-# A vault in a sync folder (Proton Drive, iCloud, Dropbox) would otherwise
-# upload a copy of every old version on every save, keep "deleted" notes
-# synced forever, and — worst — mirror the TLS private key to the provider
-# and every linked device. So they go to a per-vault directory under
-# STATE_HOME, keyed on the vault's absolute path so two vaults can't collide.
-# --state-dir overrides it; set properly in main().
+# Trash and the TLS key are deliberately NOT written into the vault. A vault
+# in a sync folder (Proton Drive, iCloud, Dropbox) would otherwise keep
+# "deleted" notes synced forever and — worst — mirror the TLS private key to
+# the provider and every linked device. So they go to a per-vault directory
+# under STATE_HOME, keyed on the vault's absolute path so two vaults can't
+# collide. --state-dir overrides it; set properly in main().
+#
+# BACKUP_DIR is where a pre-git cairn kept the previous version of every note.
+# Nothing writes there any more — history is `git log` now — but it is still
+# the destination migrate_state() empties an old vault's .backups/ into, and
+# anything already in it is left alone.
 STATE_DIR = None
 BACKUP_DIR = TRASH_DIR = CERT_DIR = None
 
@@ -111,8 +121,8 @@ MIME = {
 # screenshot, a bug report and a running server can be talked about as the
 # same thing. 0.1 was the three-pane editor; 0.2 drew its controls on canvas,
 # put the vault in a tree, the note in an outline and sync in a footer, and
-# added live mode.
-VERSION = "0.2.0"
+# added live mode. 0.3 made the vault a git repository cairn owns.
+VERSION = "0.3.0"
 
 # A fallback only: main() replaces this with the token persisted in the
 # state directory. Generating it per process meant every restart logged
@@ -120,21 +130,29 @@ VERSION = "0.2.0"
 TOKEN = secrets.token_urlsafe(24)
 COOKIE = "notes_session"
 
-# Optional sync command, enabled only by --sync-cmd. cairn neither knows nor
-# cares what the script does — it is the user's own, and pointing at one is an
-# explicit choice made at startup, the same shape as --vault.
-#
-# The reason this is safe to put behind a button: nothing from a request ever
-# reaches it. No arguments, no shell, no note content, no path — the command is
-# fixed when the server starts and run as a one-element argv list. A note is
-# text an attacker could have written; it never gets a say in what runs here.
-SYNC_CMD = None
+# Sync is built in rather than configured: it moves this machine's branch
+# through the repository's `origin` and merges the other machines' branches
+# back. It used to be --sync-cmd, an arbitrary script; what made that safe
+# survives the change unaltered. Nothing from a request ever reaches a
+# command: every git call below is a fixed argv list with no shell, no note
+# content and no path from a request body. A note is text an attacker could
+# have written; it never gets a say in what runs here. The remote is whatever
+# `origin` is in the vault, set once by the user with git.
 SYNC_TIMER = None
 SYNC_TIMEOUT = 900
 SYNC_STATE = None                            # per vault; set in set_state_dir
-# Two syncs writing the vault at once would fight over the same files, and the
-# server is threaded, so concurrent presses are real.
-SYNC_LOCK = threading.Lock()
+# One lock over every git command that writes. It was SYNC_LOCK and covered
+# only the sync script; cairn commits on every save now, and a merge landing
+# while a save stages its file would corrupt the index. The server is
+# threaded, so that collision is real. Re-entrant because a sync commits.
+GIT_LOCK = threading.RLock()
+# Whether the lock is held by a sync in particular. The footer asks "is a sync
+# running", and a lock held for the half-millisecond of a save's commit is not
+# an answer to that question.
+SYNCING = False
+
+# The branch this machine writes, host/<hostname>. Set in git_start().
+BRANCH = None
 
 # Everything cairn itself has run, newest last, for the activity panel in the
 # footer. In memory only: it is a view of this process's own actions, not a
@@ -283,23 +301,14 @@ def inside(path, root):
 
 
 def stamped(base, full):
-    """<base>/<vault-relative dir>/<name>.<timestamp>.md — the same shape for
-    backups and trash, so two notes with one filename in different folders
-    can't land on top of each other."""
+    """<base>/<vault-relative dir>/<name>.<timestamp>.md — trash keeps the
+    note's folder, so two notes with one filename in different folders can't
+    land on top of each other. (Migrated backups have the same shape.)"""
     rel = os.path.relpath(full, VAULT)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     dest = os.path.join(base, os.path.dirname(rel),
                         "%s.%s.md" % (os.path.basename(rel)[:-3], stamp))
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    return dest
-
-
-def backup(full):
-    """Keep the version we are about to overwrite."""
-    if not os.path.isfile(full):
-        return None
-    dest = stamped(BACKUP_DIR, full)
-    shutil.copy2(full, dest)
     return dest
 
 
@@ -309,7 +318,12 @@ def migrate_state():
     .trash/ nobody looks at, still syncing, and a private key still in the
     cloud — so on start they are moved into STATE_DIR. Merge, never
     overwrite: anything already at the destination stays, and the old copy
-    stays put and gets reported rather than lost."""
+    stays put and gets reported rather than lost.
+
+    .backups/ is on this list even though nothing writes backups any more.
+    The vault is a git repository now, and the first thing cairn does with a
+    dirty tree is commit it — which would swallow every old version of every
+    note into the history it is meant to replace."""
     if inside(STATE_DIR, VAULT):
         return []
     moved = []
@@ -394,32 +408,264 @@ def run_log_since(n):
 
 
 # --------------------------------------------------------------------------
-# git and the sync folder
+# the vault's git repository
 # --------------------------------------------------------------------------
 #
-# Both are read-only and both are inferred, never configured: if the vault is
-# in a git repository cairn reports on it, and if the vault sits inside a
-# provider's sync folder cairn names the provider. Nothing here writes, stages,
-# commits or pushes -- the footer is a window on the two systems that move
-# these notes around, not a second set of controls for them.
+# cairn owns this repository. Every save is a commit, on a branch named for
+# this machine, and `git log` is where a note's history lives — there is no
+# .backups/ any more. Two rules hold the whole design up:
+#
+#   * a save and its commit are atomic. Both or neither. A save whose commit
+#     fails leaves the file exactly as it was and tells the user why.
+#   * the repository's own hooks stay armed. The vault this was built for has
+#     a pre-commit hook that refuses credential-shaped strings, because a live
+#     GitHub token sat in a note for months once. cairn never passes
+#     --no-verify: if the hook says no, the save is refused and the text stays
+#     in the textarea where the user can fix it.
+#
+# Nothing a request carries ever becomes an argument to git. Paths go through
+# safe_path() first and reach git only after `--`; commit messages are built
+# here, never taken from the body; and every call is a fixed argv list run
+# without a shell.
 
 GIT_TTL = 4.0                                # a poll every few seconds is free
 _git_cache = {"at": 0.0, "info": None}
 
+# GIT_TERMINAL_PROMPT=0 so a remote that wants a password fails the sync
+# instead of hanging a request forever on a prompt nobody can see.
+GIT_ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+
+
+def git(*args, **kw):
+    """One git command in the vault. Returns (exit code, output).
+
+    stderr is folded into stdout because the interesting output here is the
+    hook's complaint and git's merge chatter, and both should reach the user
+    in the order git wrote them.
+    """
+    timeout = kw.pop("timeout", 120)
+    try:
+        p = subprocess.run(("git", "-C", VAULT) + args,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=timeout, text=True, env=GIT_ENV)
+    except subprocess.TimeoutExpired:
+        return 1, "git %s timed out after %ds" % (args[0], timeout)
+    except OSError as e:
+        return 1, str(e)
+    return p.returncode, p.stdout.strip()
+
 
 def _git(*args):
-    """One read-only git command in the vault. None if git cannot answer.
+    """One read-only git command. None if git cannot answer.
 
     --no-optional-locks so that reading the status here can never collide with
     a git command the user is running in a terminal on the same repository.
     """
-    try:
-        p = subprocess.run(("git", "--no-optional-locks", "-C", VAULT) + args,
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                           timeout=5, text=True)
-    except (OSError, subprocess.SubprocessError):
-        return None                          # no git installed, or it hung
-    return p.stdout.strip() if p.returncode == 0 else None
+    code, out = git("--no-optional-locks", *args, timeout=10)
+    return out if code == 0 else None
+
+
+def git_fresh():
+    """Forget the cached status — call after anything that writes."""
+    _git_cache["info"] = None
+
+
+def git_tracked(rel):
+    return git("ls-files", "--error-unmatch", "--", rel)[0] == 0
+
+
+def git_dirty():
+    return bool(_git("status", "--porcelain"))
+
+
+def host_branch():
+    """host/<this machine>. Sanitised because it becomes a ref name."""
+    name = socket.gethostname().split(".")[0]
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")
+    while ".." in name:
+        name = name.replace("..", ".")
+    if name.endswith(".lock"):
+        name = name[:-5]
+    return "host/" + (name or "unknown")
+
+
+def commit_message(verb, full, content=None):
+    """Built here, never taken from a request. Subject is the note's title,
+    which is what a `git log --oneline` is actually read for; the path goes
+    in the body, where two notes with one title stay tellable apart."""
+    if content is None:
+        try:
+            content = open(full, encoding="utf-8").read()
+        except OSError:
+            content = ""
+    meta, _ = parse_frontmatter(content)
+    title = meta.get("title") or os.path.basename(full)[:-3]
+    rel = os.path.relpath(full, VAULT)
+    return "%s %s\n\n%s\n" % (verb, title.replace("\n", " ")[:60], rel)
+
+
+def git_commit(rel, message):
+    """Stage one path and commit only that path. (ok, output).
+
+    The pathspec is what keeps a save from sweeping up whatever else is dirty
+    in the tree — a note the user is editing in another program, an image
+    half-copied into attachments/. It also means the hook only ever sees the
+    file this save is about.
+    """
+    code, out = git("add", "--", rel)
+    if code:
+        return False, out
+    # Identical bytes: a save that changed nothing is a success with nothing
+    # to record, not an empty commit and not an error.
+    if git("diff", "--cached", "--quiet", "--", rel)[0] == 0:
+        return True, ""
+    code, out = git("commit", "-q", "-m", message, "--", rel)
+    return code == 0, out
+
+
+def git_commit_all(message):
+    """Commit the whole tree — used at startup to adopt outside edits, and by
+    a sync before it touches anyone else's branch."""
+    code, out = git("add", "-A")
+    if code:
+        return False, out
+    if git("diff", "--cached", "--quiet")[0] == 0:
+        return True, ""
+    code, out = git("commit", "-q", "-m", message)
+    return code == 0, out
+
+
+def git_restore(rel, tracked):
+    """Put one path back the way HEAD has it, and unstage it.
+
+    The rollback half of "both or neither": it runs when a commit was refused,
+    and its job is to leave no trace of the write that was refused.
+    """
+    git("reset", "-q", "--", rel)
+    if tracked:
+        git("checkout", "-q", "HEAD", "--", rel)
+    else:
+        try:
+            os.remove(os.path.join(VAULT, rel))
+        except OSError:
+            pass
+
+
+def write_note(full, content, verb):
+    """Write one note and commit it, or leave the vault exactly as it was.
+
+    Returns (ok, detail, previous) — detail is the new commit's sha on
+    success and git's own words on failure, and previous is the text that was
+    there before, which the client needs to stay truthful about the file it
+    thinks it has open.
+    """
+    rel = os.path.relpath(full, VAULT)
+    with GIT_LOCK:
+        existed = os.path.isfile(full)
+        previous = None
+        if existed:
+            try:
+                previous = open(full, encoding="utf-8").read()
+            except (OSError, UnicodeDecodeError):
+                previous = None
+        tracked = git_tracked(rel)
+        atomic_write(full, content)
+        ok, out = git_commit(rel, commit_message(verb, full, content))
+        if not ok:
+            git_restore(rel, tracked)
+            # A tracked file comes back from HEAD; an untracked one is gone.
+            # Either way the bytes on disk are the ones `previous` describes,
+            # so the client can be told the truth about what it has open.
+            git_fresh()
+            return False, out, previous
+        git_fresh()
+        return True, _git("rev-parse", "--short", "HEAD") or "", previous
+
+
+def remove_note(full):
+    """Move a note to the trash and commit the removal.
+
+    Trash and history are different jobs: trash is an undelete button for
+    someone who clicked the wrong note, history is the record of what the
+    vault said. Both, therefore, not either.
+    """
+    rel = os.path.relpath(full, VAULT)
+    with GIT_LOCK:
+        dest = stamped(TRASH_DIR, full)
+        shutil.move(full, dest)
+        message = commit_message("Delete", full, "")
+        code, out = git("add", "-A", "--", rel)
+        if code == 0:
+            code, out = git("commit", "-q", "-m", message, "--", rel)
+        git_fresh()
+        if code:
+            # The note is already in the trash, so there is nothing to undo —
+            # but the removal is not in the history, and saying so is better
+            # than a silent divergence between the two.
+            return dest, out
+        return dest, None
+
+
+def git_start():
+    """Make the vault a repository cairn owns, checked out on this machine's
+    branch, with a tree that agrees with HEAD. Exits rather than starting in
+    any state where "every save is a commit" would be a lie."""
+    global BRANCH
+    if not shutil.which("git"):
+        sys.exit("git is not on PATH.\n"
+                 "cairn keeps every version of every note in a git repository "
+                 "in the vault, so it needs git installed.")
+
+    top = _git("rev-parse", "--show-toplevel")
+    if not top:
+        code, out = git("init", "-b", "main")
+        if code:
+            sys.exit("could not create a git repository in %s — %s" % (VAULT, out))
+        print("  git   : created a repository in the vault")
+    elif os.path.realpath(top) != os.path.realpath(VAULT):
+        sys.exit("the vault is inside the git repository at %s, not at its root.\n"
+                 "cairn commits on a branch of its own per machine, which would "
+                 "move that repository's branch too.\n"
+                 "Serve the repository root with --vault, or give the vault its "
+                 "own repository." % top)
+
+    # Local only, and only when the machine has no identity of its own: a
+    # commit with no author fails, and failing every save on a fresh machine
+    # over a git config nobody has set yet would be a poor first impression.
+    if not _git("config", "user.email"):
+        git("config", "user.email", "cairn@" + socket.gethostname().split(".")[0])
+    if not _git("config", "user.name"):
+        git("config", "user.name", "cairn")
+
+    BRANCH = host_branch()
+
+    if not _git("rev-parse", "--verify", "-q", "HEAD"):
+        ok, out = git_commit_all("Adopt the vault as it stands")
+        if not ok:
+            sys.exit("the first commit was refused:\n\n%s\n\n"
+                     "cairn keeps history in this repository, so it will not "
+                     "start with a tree it cannot commit." % out)
+
+    if _git("rev-parse", "--abbrev-ref", "HEAD") != BRANCH:
+        if git("rev-parse", "--verify", "-q", "refs/heads/" + BRANCH)[0] != 0:
+            code, out = git("branch", BRANCH)
+            if code:
+                sys.exit("could not create the branch %s — %s" % (BRANCH, out))
+        code, out = git("checkout", "-q", BRANCH)
+        if code:
+            sys.exit("could not check out %s — %s" % (BRANCH, out))
+
+    # A tree that disagrees with HEAD at startup would make "every save is a
+    # commit" false from the first request: the next save would carry along
+    # whatever else was lying around. So it is adopted, or cairn does not run.
+    if git_dirty():
+        ok, out = git_commit_all("Adopt changes made outside cairn")
+        if not ok:
+            sys.exit("changes already in the vault could not be committed:\n\n%s\n\n"
+                     "Fix or remove what the hook objects to, then start cairn "
+                     "again." % out)
+        print("  git   : committed changes that were already in the vault")
+    git_fresh()
 
 
 def git_info():
@@ -433,8 +679,6 @@ def git_info():
         info = {"repo": False}
     else:
         branch = _git("rev-parse", "--abbrev-ref", "HEAD")
-        # The whole tree, not just the vault: a repository whose root is above
-        # the vault can be dirty in a way the vault alone would not show.
         porcelain = _git("status", "--porcelain") or ""
         changed = untracked = 0
         for line in porcelain.splitlines():
@@ -467,10 +711,36 @@ def git_info():
                 "changed": changed, "untracked": untracked,
                 "clean": changed == 0 and untracked == 0,
                 "upstream": upstream, "ahead": ahead, "behind": behind,
-                "last": last}
+                "last": last,
+                # Where a sync would push. No origin means no sync button:
+                # there is nowhere for this machine's branch to go.
+                "remote": _git("remote", "get-url", "origin"),
+                "peers": peer_count()}
 
     _git_cache.update(at=now, info=info)
     return info
+
+
+def peer_branches():
+    """The other machines' branches, oldest commit first.
+
+    Ordering is not decoration. Merging with -X theirs means the branch coming
+    in wins the conflicting hunks, so the order the merges happen in decides
+    which machine's version of a line survives — see run_sync().
+    """
+    out = _git("for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)",
+               "refs/remotes/origin/host") or ""
+    rows = []
+    for line in out.splitlines():
+        ref, _, when = line.partition("\t")
+        if ref and ref != "origin/" + (BRANCH or "") and when.isdigit():
+            rows.append((int(when), ref))
+    rows.sort()
+    return rows
+
+
+def peer_count():
+    return len(peer_branches())
 
 
 # Directory names a provider gives its sync folder. macOS File Provider names
@@ -511,8 +781,22 @@ def cloud_info():
 
 
 # --------------------------------------------------------------------------
-# optional sync command
+# sync
 # --------------------------------------------------------------------------
+#
+# One machine's branch out, every other machine's branch in. Nothing else:
+# no working-tree copying, no rsync, no file the request gets to name.
+#
+# Conflicts resolve last-writer-wins, which takes a little care to actually
+# mean that. `-X theirs` resolves conflicting hunks in favour of the branch
+# being merged, which is "last fetched wins" unless the order is chosen: so
+# the peers are merged oldest first, and a peer whose tip is older than this
+# machine's own last commit is merged with `-X ours` instead. The branch that
+# was written most recently is the one left standing either way.
+#
+# The version that loses needs no special logging. It is a permanent commit
+# on the machine that wrote it, and after the merge it is a permanent commit
+# here too.
 
 def systemd_timer(unit):
     """Next and last firing of a systemd --user timer, in epoch seconds.
@@ -555,7 +839,12 @@ def sync_status():
             last = json.load(fh)
     except (OSError, ValueError):
         pass                                  # nothing has been recorded yet
-    info = {"enabled": bool(SYNC_CMD), "running": SYNC_LOCK.locked(),
+    git = git_info()
+    # No origin, no sync: there is nowhere for this machine's branch to go and
+    # nobody else's to merge. The button hides rather than failing on a press.
+    info = {"enabled": bool(git.get("remote")), "running": SYNCING,
+            "remote": git.get("remote"), "branch": git.get("branch"),
+            "peers": git.get("peers", 0),
             "last": last, "next": None, "timer_last": None}
     if SYNC_TIMER:
         # A timer-driven run happens entirely outside cairn, so its time comes
@@ -572,53 +861,79 @@ def sync_status():
 
 
 def run_sync():
-    """Run the configured command and record what happened.
+    """Push this machine's branch, merge every other machine's, push again.
 
-    Read line by line rather than collected at the end, so the activity panel
-    fills as the script talks instead of staying empty until it is done. The
-    timeout is a timer that kills the process: a script that prints nothing
-    and hangs would never come back through the reader on its own.
+    Assumes GIT_LOCK is held: a merge rewriting the working tree while a save
+    is staging a file is the collision the single lock exists to stop.
+
+    Every step is logged as it happens rather than collected at the end, so
+    the activity panel fills while a slow push is still going.
     """
     started = time.time()
-    log_run(SYNC_CMD, "start")
     lines = []
-    code = None
-    timed_out = []
+    failed = []
 
-    try:
-        proc = subprocess.Popen(
-            [SYNC_CMD],                       # argv list: no shell, no splitting
-            cwd=VAULT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1)
-    except OSError as e:
-        lines.append(str(e))
-        log_run(str(e), "err")
-    else:
-        killer = threading.Timer(SYNC_TIMEOUT,
-                                 lambda: (timed_out.append(True), proc.kill()))
-        killer.start()
-        try:
-            for line in proc.stdout:
-                line = line.rstrip("\n")
-                lines.append(line)
-                log_run(line, "out")
-            code = proc.wait()
-        finally:
-            killer.cancel()
-            proc.stdout.close()
-        if timed_out:
-            code = None                       # killed, so its exit code is noise
-            lines.append("timed out after %d seconds" % SYNC_TIMEOUT)
-            log_run(lines[-1], "err")
+    def say(text, kind="out"):
+        for line in str(text).splitlines() or [""]:
+            lines.append(line)
+            log_run(line, kind)
 
-    output = "\n".join(lines)
+    def step(*args):
+        say("git " + " ".join(args), "cmd")
+        code, out = git(*args, timeout=SYNC_TIMEOUT)
+        if out:
+            say(out, "err" if code else "out")
+        if code:
+            failed.append(" ".join(args))
+        return code == 0
+
+    log_run("sync on %s" % (BRANCH or "?"), "start")
+    lines.append("sync on %s" % (BRANCH or "?"))
+
+    # 1. Anything outstanding is committed first. A merge refuses to run over
+    #    a dirty tree, and a note the user edited in another program is part
+    #    of what a sync is for.
+    if git_dirty():
+        ok, out = git_commit_all("Adopt changes made outside cairn")
+        say("committed changes that were already in the vault"
+            if ok else out, "out" if ok else "err")
+        if not ok:
+            failed.append("commit")
+
+    mine = _git("log", "-1", "--format=%ct") or "0"
+    mine = int(mine) if mine.isdigit() else 0
+
+    # 2. Out, then in, then out again — the last push carries the merges.
+    #    -u on the first one so the footer can say ahead/behind afterwards.
+    if not failed and step("push", "-u", "origin", BRANCH):
+        if step("fetch", "--prune", "origin"):
+            merged = 0
+            for when, ref in peer_branches():
+                # Older than this machine's newest commit: this machine is the
+                # later writer, so it keeps its lines. Newer: it does not.
+                strategy = "theirs" if when > mine else "ours"
+                if not step("merge", "--no-edit", "-X", strategy, ref):
+                    # An -X merge only fails on something a strategy cannot
+                    # decide, like the same file added and deleted. Put the
+                    # tree back and let the user look. Not through step(): the
+                    # merge is the failure, and an abort with nothing to abort
+                    # would report a second one on top of it.
+                    say("git merge --abort", "cmd")
+                    git("merge", "--abort")
+                    break
+                merged += 1
+            if not failed:
+                say("merged %d branch%s" % (merged, "" if merged == 1 else "es"))
+                if merged:
+                    step("push", "origin", BRANCH)
+
+    git_fresh()
     record = {"at": started, "seconds": round(time.time() - started, 1),
-              "ok": code == 0, "code": code,
-              "output": output[-4000:]}       # a tail is all the UI shows
+              "ok": not failed, "code": 1 if failed else 0,
+              "output": "\n".join(lines)[-4000:]}
     log_run("finished in %ss%s" % (record["seconds"],
                                    "" if record["ok"] else
-                                   " — failed" if code is None else
-                                   " — exit %d" % code),
+                                   " — %s failed" % failed[0]),
             "end" if record["ok"] else "err")
     try:
         atomic_write(SYNC_STATE, json.dumps(record))
@@ -1233,7 +1548,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 since = 0
             lines, seq = run_log_since(since)
             return self.send_json(200, {"ok": True, "lines": lines, "seq": seq,
-                                        "running": SYNC_LOCK.locked()})
+                                        "running": SYNCING})
 
         if path == "/cert":
             # Deliberately unauthenticated, and deliberately the .crt alone.
@@ -1293,9 +1608,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if data.get("stamp", True):
             content = touch_updated(content)
-        kept = backup(full)
-        atomic_write(full, content)
-        return self.send_json(200, {"ok": True, "backup": kept,
+
+        ok, detail, previous = write_note(full, content, "Update")
+        if not ok:
+            # 422: the request was fine, the repository refused it — a
+            # pre-commit hook finding a credential-shaped string is why this
+            # normally happens. Nothing was written, so the client is handed
+            # the file as it still is, and the user still has their text in
+            # the textarea to fix.
+            return self.send_json(422, {
+                "ok": False,
+                "error": "the vault's git hook refused this save",
+                "refused": detail,
+                "content": previous if previous is not None else "",
+                "mtime": os.path.getmtime(full) if os.path.isfile(full) else None})
+        return self.send_json(200, {"ok": True, "commit": detail,
                                     "mtime": os.path.getmtime(full),
                                     "content": content})
 
@@ -1330,21 +1657,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             body = ("---\ntitle: %s\ntags: []\nupdated: %s\n---\n\n# %s\n\n"
                     % (title, today, title))
-            atomic_write(full, body)
+            ok, detail, _ = write_note(full, body, "Add")
+            if not ok:
+                return self.send_json(422, {"ok": False, "refused": detail,
+                                            "error": "the vault's git hook refused this note"})
             return self.send_json(200, {"ok": True, "path": os.path.relpath(full, VAULT),
-                                        "content": body, "mtime": os.path.getmtime(full)})
+                                        "commit": detail, "content": body,
+                                        "mtime": os.path.getmtime(full)})
 
         if route == "/api/sync":
-            if not SYNC_CMD:
-                return self.fail(404, "no sync command configured (see --sync-cmd)")
+            if not git_info().get("remote"):
+                return self.fail(404, "this vault has no 'origin' remote, so there "
+                                      "is nowhere to sync to")
             # Refuse rather than queue: a second sync on top of a running one
-            # would have two processes writing the same notes.
-            if not SYNC_LOCK.acquire(blocking=False):
-                return self.fail(409, "a sync is already running")
+            # would be two merges racing over one index. Non-blocking so a
+            # press during a save waits for nothing — it is told to try again.
+            if not GIT_LOCK.acquire(blocking=False):
+                return self.fail(409, "the repository is busy — try again in a moment")
+            global SYNCING
+            SYNCING = True
             try:
                 record = run_sync()
             finally:
-                SYNC_LOCK.release()
+                SYNCING = False
+                GIT_LOCK.release()
             # The request succeeded even when the script failed; the client
             # reads record["ok"] to tell those apart, so a failing sync gets a
             # real message instead of a generic transport error.
@@ -1356,9 +1692,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 full = safe_path(data["path"], must_exist=True)
             except (ValueError, KeyError, json.JSONDecodeError) as e:
                 return self.fail(400, str(e))
-            dest = stamped(TRASH_DIR, full)
-            shutil.move(full, dest)
-            return self.send_json(200, {"ok": True, "trashed": dest})
+            dest, why = remove_note(full)
+            # The note is in the trash either way; `why` says the removal did
+            # not make it into the history, which is worth telling the user.
+            return self.send_json(200, {"ok": True, "trashed": dest,
+                                        "uncommitted": why})
 
         if route == "/api/terminal":
             # Opening a window is the one thing here that reaches outside the
@@ -1418,16 +1756,13 @@ def main():
                     help="path to the notes vault (default: $NOTES_VAULT, "
                          "else the folder containing this script's parent)")
     ap.add_argument("--state-dir", default=None,
-                    help="where backups/, trash/ and certs/ go (default: a "
-                         "per-vault directory under $XDG_STATE_HOME/cairn, "
-                         "i.e. ~/.local/state/cairn/vaults/<name>-<hash>)")
+                    help="where trash/ and certs/ go (default: a per-vault "
+                         "directory under $XDG_STATE_HOME/cairn, i.e. "
+                         "~/.local/state/cairn/vaults/<name>-<hash>)")
     ap.add_argument("--version", action="version", version="cairn " + VERSION)
     ap.add_argument("--new-token", action="store_true",
                     help="discard the saved token and generate a fresh one, "
                          "logging out every device that had been paired")
-    ap.add_argument("--sync-cmd", default=None,
-                    help="script the Sync button runs, with no arguments and no "
-                         "shell (default: no button, and /api/sync is a 404)")
     ap.add_argument("--sync-timer", default=None,
                     help="systemd --user timer unit to read the next scheduled "
                          "sync from, e.g. vault-sync.timer")
@@ -1438,21 +1773,13 @@ def main():
                     help="refuse to open terminal windows at all")
     args = ap.parse_args()
 
-    global VAULT, SYNC_CMD, SYNC_TIMER, TERMINAL_CWD, TERMINAL_ENABLED
+    global VAULT, SYNC_TIMER, TERMINAL_CWD, TERMINAL_ENABLED
     if args.vault:
         VAULT = os.path.abspath(os.path.expanduser(args.vault))
     if args.terminal_cwd:
         TERMINAL_CWD = os.path.abspath(os.path.expanduser(args.terminal_cwd))
     TERMINAL_ENABLED = not args.no_terminal
 
-    if args.sync_cmd:
-        SYNC_CMD = os.path.abspath(os.path.expanduser(args.sync_cmd))
-        # Fail here rather than on the first button press, where the only
-        # symptom is a red toast in a browser.
-        if not os.path.isfile(SYNC_CMD):
-            sys.exit("--sync-cmd %s is not a file" % SYNC_CMD)
-        if not os.access(SYNC_CMD, os.X_OK):
-            sys.exit("--sync-cmd %s is not executable — chmod +x it" % SYNC_CMD)
     SYNC_TIMER = args.sync_timer
 
     if not os.path.isdir(VAULT):
@@ -1468,12 +1795,13 @@ def main():
         state = os.path.abspath(os.path.expanduser(args.state_dir))
         # Inside the vault is allowed (it is how you get the old behaviour
         # back) but only under a dot-directory, which the listing skips.
-        # Anywhere else in the vault, every backup would show up as a note.
+        # Anywhere else in the vault, every trashed note would come back as
+        # one — and, worse, be committed.
         if inside(state, VAULT):
             rel = os.path.relpath(state, VAULT)
             if rel == os.curdir or not rel.split(os.sep)[0].startswith("."):
                 sys.exit("--state-dir %s is inside the vault but not hidden — "
-                         "backups would be listed as notes.\n"
+                         "trashed notes would be listed as notes.\n"
                          "Use a dot-directory (e.g. %s) or somewhere outside."
                          % (state, os.path.join(VAULT, ".cairn")))
         if inside(VAULT, state):
@@ -1487,6 +1815,13 @@ def main():
         sys.exit("could not create state directory %s — %s" % (STATE_DIR, e))
     migrated = migrate_state()
     load_token(rotate=args.new_token)
+
+    print("\n  cairn %s" % VERSION)
+    print("  vault : %s" % VAULT)
+    # Before the port is bound and before the banner's remaining lines: this
+    # can exit, and it can print, and a half-started server is worse than one
+    # that never came up.
+    git_start()
 
     host = args.host or ("0.0.0.0" if args.lan else "127.0.0.1")
     exposed = host not in ("127.0.0.1", "localhost")
@@ -1508,9 +1843,8 @@ def main():
 
     local = "%s://127.0.0.1:%d/?token=%s" % (scheme, args.port, TOKEN)
 
-    print("\n  cairn %s" % VERSION)
-    print("  vault : %s" % VAULT)
     print("  notes : %d" % len(list_notes()))
+    print("  branch: %s" % BRANCH)
     print("  state : %s" % STATE_DIR)
     if inside(STATE_DIR, VAULT):
         print("  !! the state directory is inside the vault — the access token")
@@ -1519,8 +1853,8 @@ def main():
         print("  moved %s -> %s" % (old, new))
         for src in left:
             print("    left in place (already at destination): %s" % src)
-    if SYNC_CMD:
-        print("  sync  : %s" % SYNC_CMD)
+    remote = git_info().get("remote")
+    print("  sync  : %s" % (remote or "off — no 'origin' remote in the vault"))
     print("  this machine : %s" % local)
     if exposed:
         for ip in addrs or ["<this machine's IP>"]:
@@ -1550,7 +1884,8 @@ def main():
             print("  !! PLAIN HTTP ON THE NETWORK !!")
             print("  Your notes and this token cross the wire unencrypted and are")
             print("  readable by anyone else on this network. Restart with --tls.\n")
-    print("  Backups go to backups/ and deletes to trash/ under the state directory.")
+    print("  Every save is a commit on %s. Deletes also go to trash/ under" % BRANCH)
+    print("  the state directory, so a wrong click is one file move to undo.")
     if terminal_ready():
         print("  Code blocks open in %s at %s — typed, never run."
               % (find_terminal()[0], TERMINAL_CWD))
