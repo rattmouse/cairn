@@ -162,6 +162,18 @@ body[data-right="off"] #outline{display:none}
 #status.error{color:var(--bad);font-weight:600}
 #seg{width:236px;height:30px;flex:0 0 236px;display:block;border-radius:var(--r);cursor:pointer}
 
+/* The save-refused banner. It sits between the bar and the panes rather than
+   over them: the text it is about is still in the textarea, and covering that
+   while asking someone to fix it would be unkind. */
+#refused{margin:0 16px 10px;padding:10px 12px;border-radius:8px;
+  border:1px solid var(--bad);background:var(--warn-bg);font-size:13px}
+#refused[hidden]{display:none}
+#refused h2{margin:0 0 4px;font-size:13px;font-weight:700;color:var(--bad)}
+#refused pre{margin:6px 0 0;padding:8px;max-height:140px;overflow:auto;
+  background:var(--code-bg);border-radius:6px;white-space:pre-wrap;
+  font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+#refused .why{color:var(--dim)}
+#refused button{float:right;margin-left:10px}
 #panes{flex:1;display:flex;min-height:0;position:relative}
 #editWrap,#viewWrap,#liveWrap{min-width:0;position:relative;flex:1 1 0}
 #editWrap{display:none}
@@ -338,6 +350,8 @@ body[data-console="on"] #console{display:block}
 .ln.end .m{color:var(--ok);font-weight:700}
 .ln.err .m{color:var(--bad)}
 .ln.term .m{color:var(--note)}
+/* The git commands a sync runs, so the panel reads as a transcript of one. */
+.ln.cmd .m{color:var(--dim)}
 #footbar{display:flex;align-items:center;gap:14px;padding:5px 14px;min-height:34px;
   font-size:11.5px;color:var(--dim)}
 #ver{flex:0 0 auto;font-size:10px;letter-spacing:.09em;text-transform:uppercase;
@@ -473,6 +487,14 @@ body[data-console="on"] #console{display:block}
       <button class="btn primary" id="saveBtn" disabled>Save</button>
       <button class="tog" id="rightBtn" type="button" title="Outline (Ctrl/⌘-E)"
         aria-pressed="true">Outline</button>
+    </div>
+    <div id="refused" hidden role="alert">
+      <button class="btn" id="refusedBtn" type="button">Dismiss</button>
+      <h2>Save refused</h2>
+      <div class="why">The vault's git hook would not commit this note, so
+        nothing was written. Your text is still here — fix what it names and
+        save again.</div>
+      <pre id="refusedWhy"></pre>
     </div>
     <div id="panes">
       <div id="editWrap">
@@ -1444,7 +1466,14 @@ function api(path, opts){
   if (opts.body) opts.headers["Content-Type"] = "application/json";
   return fetch(path, opts).then(async r => {
     const j = await r.json().catch(() => ({ok:false, error:"bad response from server"}));
-    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+    if (!r.ok || j.ok === false){
+      /* A refused save answers 422 and carries more than a message: the hook's
+         own words, and the file as it still is on disk. Hang the whole payload
+         on the error so the caller can use it rather than reparse a string. */
+      const e = new Error(j.error || ("HTTP " + r.status));
+      e.status = r.status; e.detail = j;
+      throw e;
+    }
     return j;
   });
 }
@@ -2193,6 +2222,7 @@ function open_(path){
   if (dirty && !confirm("You have unsaved changes. Discard them?")) return;
   const n = NOTES.find(x => x.path === path);
   if (!n) return;
+  showRefusal(null);                    /* it was about the note being left */
   current = n;
   edEl.value = n.raw;
   crumbEl.innerHTML = "";
@@ -2240,7 +2270,10 @@ async function save(){
     if (t) current.title = t[1].trim();
     saving = false;
     setDirty(false);
-    setStatus("saved" + (r.backup ? " · previous kept in .backups/" : ""), "saved");
+    showRefusal(null);
+    /* The sha is the whole point of the commit being part of the save: it is
+       what `git show` takes to bring this exact version back. */
+    setStatus("saved" + (r.commit ? " · " + r.commit : ""), "saved");
     preview();
     drawStats();
     mapS.paint();
@@ -2249,12 +2282,29 @@ async function save(){
     saving = false;
     saveBtn.disabled = false;
     setStatus(e.message, "error");
+    if (e.status === 422 && e.detail){
+      /* Nothing was written, and the file on disk is the one cairn just put
+         back. Take its mtime, or the next attempt would be refused a second
+         time — for the wrong reason, by the conflict check. */
+      if (typeof e.detail.content === "string") current.raw = e.detail.content;
+      if (e.detail.mtime) current.mtime = e.detail.mtime;
+      showRefusal(e.detail.refused || e.message);
+      return;
+    }
     if (/changed on disk/.test(e.message)){
       alert("This note changed on disk since you opened it — probably edited in another "
           + "program.\n\nYour text here has NOT been saved. Copy anything you want to keep, "
           + "then reload the page to pick up the version on disk.");
     }
   }
+}
+
+function showRefusal(text){
+  /* Shown until it is dismissed or the next save succeeds. A hook's complaint
+     names a file and a line number, and that is worth reading twice. */
+  const el = $("refused");
+  $("refusedWhy").textContent = text || "";
+  el.hidden = !text;
 }
 
 /* ---------------------------- dialog ---------------------------- */
@@ -2285,7 +2335,9 @@ async function createNote(){
     edEl.focus();
     edEl.setSelectionRange(edEl.value.length, edEl.value.length);
   } catch (e){
-    $("dlgErr").textContent = e.message;
+    $("dlgErr").textContent = e.detail && e.detail.refused
+      ? e.message + " — " + e.detail.refused.split("\n")[0]
+      : e.message;
   }
 }
 
@@ -2299,7 +2351,9 @@ async function trashNote(){
     edEl.value = ""; dropSurfacesIn(viewEl); viewEl.innerHTML = "";
     crumbEl.textContent = ""; $("stats").textContent = "";
     await reload();
-    setStatus("moved to " + r.trashed, "saved");
+    setStatus(r.uncommitted ? "moved to trash, but the removal was not committed"
+                            : "moved to trash · committed",
+              r.uncommitted ? "error" : "saved");
     $("trashBtn").disabled = true;
     mapS.paint();
     if (NOTES.length) open_(NOTES[0].path);
@@ -2307,8 +2361,10 @@ async function trashNote(){
 }
 
 /* ----------------------------- sync ----------------------------- */
-/* The row is hidden unless the server was started with --sync-cmd, so a
-   plain cairn looks exactly as it did before.                          */
+/* Sync is this machine's branch out and every other machine's branch in.
+   The row is here whenever cairn has answered at all: with an `origin` to
+   push to it is a button and a dial, and without one it says so, because a
+   missing remote is a thing to fix rather than a feature to hide.       */
 
 const syncEl = $("sync"), syncBtn = $("syncBtn"), syncInfo = $("syncInfo");
 let SYNC = null;
@@ -2330,10 +2386,31 @@ function drawSync(){
   /* An attribute rather than a class: the mode switch owns body's classes. */
   if (s && s.enabled) document.body.dataset.sync = "on";
   else delete document.body.dataset.sync;
-  if (!s || !s.enabled){ syncEl.hidden = true; animate(dialS, false); return; }
+  if (!s){ syncEl.hidden = true; animate(dialS, false); return; }
   syncEl.hidden = false;
+
+  if (!s.enabled){
+    /* No origin. Nothing to push to and nobody's branch to merge, so the
+       button would be a lie — but every save is still committed, and the
+       git chip beside this says so. */
+    syncBtn.hidden = true;
+    syncInfo.innerHTML = 'Sync off <span class="sep">·</span> no remote';
+    syncEl.title = "Sync would push " + (s.branch || "this machine's branch")
+      + " to `origin` and merge the other machines' branches back, but this "
+      + "vault has no origin. A bare repository on a shared folder is enough:"
+      + "\n\n    git -C <vault> remote add origin <path or url>";
+    dialRunning = dialBad = false; dialFrac = 0;
+    animate(dialS, false); dialS.paint();
+    return;
+  }
+  syncBtn.hidden = false;
   syncBtn.disabled = !!s.running;
   syncBtn.textContent = s.running ? "…" : "Sync";
+  syncEl.title = "Push " + (s.branch || "this branch") + " to " + s.remote
+    + ", merge every other machine's branch back, push the merges."
+    + "\n\nConflicts go to whichever machine wrote last."
+    + (s.peers ? "\n\n" + s.peers + " other machine" + (s.peers === 1 ? "" : "s")
+                 + " have branches here." : "");
 
   /* A run started by the timer never passes through cairn, so its time comes
      from systemd and the button's own runs come from the state file. Whichever
@@ -2346,6 +2423,7 @@ function drawSync(){
   if (last) bits.push("Synced <b>" + esc(rel(last)) + "</b>" +
                       (failed ? ' <span class="bad">— failed</span>' : ""));
   else      bits.push("No sync yet");
+  if (s.peers) bits.push(s.peers + " other machine" + (s.peers === 1 ? "" : "s"));
   if (s.next) bits.push("next <b>" + esc(rel(s.next)) + "</b>");
   syncInfo.innerHTML = bits.join(' <span class="sep">·</span> ');
 
@@ -2360,9 +2438,10 @@ function drawSync(){
 }
 
 /* ------------------------- the rest of the footer -------------------------
-   Three ways these notes leave this machine, and cairn watching all three.
-   The footer is a window on them and a control for none of them: the only
-   button here that acts is the Sync one that was already here.          */
+   Three ways these notes leave this machine. Two of them cairn only watches
+   — the provider's folder, and whatever the user does in a terminal — and
+   the third is its own: the repository in the vault, where every save lands
+   as a commit and Sync moves the branch between machines.              */
 
 let GIT = null, CLOUD = null;
 
@@ -2426,7 +2505,11 @@ function drawGit(){
   lines.push(g.upstream ? "tracking " + g.upstream
                         : "no upstream branch — nothing to push to");
   if (g.last) lines.push(g.last.short + "  " + g.last.subject);
-  lines.push("Read-only: cairn never stages, commits or pushes.");
+  lines.push(g.remote ? "origin " + g.remote : "no origin — Sync has nowhere to go");
+  /* This line used to say cairn never stages, commits or pushes. It does all
+     three now, and the chip is the only place that says where the history
+     the user is relying on actually goes. */
+  lines.push("cairn commits every save here, on this machine's own branch.");
   /* Amber for anything that exists only on this machine — uncommitted work,
      or commits that have not been pushed. Red is kept for a failure. */
   chip(el, (!g.clean || g.ahead) ? "warn" : "ok", bits, lines.join("\n"));
@@ -2549,13 +2632,12 @@ async function doSync(){
     if (record.ok){
       setStatus("sync finished in " + record.seconds + "s", "saved");
     } else {
-      /* The exit code alone tells the user nothing. The script's last line is
-         usually the reason it stopped, and is the only part of the output that
-         reaches the page at all.                                            */
+      /* git's own last line is the reason it stopped — a rejected push, a
+         merge it could not decide. The rest of the transcript is in the
+         activity panel above, which has been filling since the run started. */
       const lines = (record.output || "").trim().split("\n").filter(l => l.trim());
       const why = lines.length ? lines[lines.length - 1].slice(0, 140) : "";
-      setStatus("sync failed" + (record.code == null ? "" : " (exit " + record.code + ")")
-                + (why ? " — " + why : ""), "error");
+      setStatus("sync failed" + (why ? " — " + why : ""), "error");
       /* The rest of it is in the activity panel above, which has been filling
          since the run started. */
     }
@@ -2744,6 +2826,7 @@ edEl.addEventListener("keydown", e => {
     mapS.paint();
   }
 });
+$("refusedBtn").addEventListener("click", () => showRefusal(null));
 $("leftBtn").addEventListener("click", () => toggle("left"));
 $("rightBtn").addEventListener("click", () => toggle("right"));
 consoleBtn.addEventListener("click", () => toggle("console"));
