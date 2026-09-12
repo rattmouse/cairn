@@ -397,3 +397,20 @@ Standard library only. It builds a throwaway vault in `/tmp` and never touches
 a real one. No terminal window is opened during the tests: a shim records what
 the server tried to launch, and the shell part is driven under a pty, which is
 where a hostile code block is proved to be typed rather than run.
+
+The same suite runs in a container, against a machine with nothing on it:
+
+```bash
+podman build -t cairn-ci . && podman run --rm cairn-ci
+```
+
+The image is a bare Debian plus `python3`, `git`, `openssl` and `bash` — the
+whole of what cairn needs and nothing else. That is the point of it: a test
+that quietly leans on something your laptop happens to have installed fails
+here. cairn itself does not want a container to run, and the image is not a
+way to run it.
+
+GitHub Actions runs both on every push and pull request — the container, and a
+stock runner with no setup step at all, because "clone it and run it" is a
+claim worth checking. There is nothing to deploy: cairn runs on the machine
+you cloned it onto, so CI ends at a green tick.
