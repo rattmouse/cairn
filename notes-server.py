@@ -28,6 +28,13 @@ On another device you open the plain URL and paste the token once; the server
 sets a session cookie (HttpOnly, SameSite=Strict) and the token never appears
 in a URL, browser history, or the page source.
 
+A client that is not a browser -- a script, an agent with a file tool -- sends
+the same token as `Authorization: Bearer <token>` and needs no cookie, and can
+say what it is in `X-Cairn-Client: <name>` so the history says where an edit
+came from instead of guessing "browser" from a User-Agent. Notes written
+straight onto disk are committed one at a time, as soon as cairn next reads or
+writes the vault, so they have a history too.
+
 Safety
 ------
 * Defaults to 127.0.0.1. Reaching it from elsewhere requires --lan explicitly.
@@ -132,8 +139,10 @@ MIME = {
 # added live mode. 0.3 made the vault a git repository cairn owns. 0.4 split
 # the two jobs that were tangled together in it: git merges what the browsers
 # editing this vault are doing, and backups are copies of the whole thing
-# somewhere else.
-VERSION = "0.4.0"
+# somewhere else. 0.5 stopped assuming an edit arrives through the browser:
+# a note written straight onto disk is committed like any other, a client
+# that is not a browser can say what it is, and a note can be renamed.
+VERSION = "0.5.0"
 
 # A fallback only: main() replaces this with the token persisted in the
 # state directory. Generating it per process meant every restart logged
@@ -177,6 +186,8 @@ TRUNK = None
 CLIENT_STATE = None
 CLIENT_PREFIX = "client/"
 CLIENT_COOKIE = "cairn_client"
+# What a client that is not a browser calls itself. See clean_label().
+CLIENT_HEADER = "X-Cairn-Client"
 CLIENTS = {}                                 # id -> {label, branch, first, last}
 CLIENTS_LOCK = threading.Lock()
 
@@ -490,6 +501,24 @@ def _git(*args):
     return out if code == 0 else None
 
 
+def _git_raw(*args):
+    """One read-only git command, output exactly as git wrote it.
+
+    git() strips, which is right for every other caller and wrong for
+    `status --porcelain`: an unstaged change has a space in the first column,
+    and stripping it turns " D note.md" into a status of "D " and a path with
+    its first character eaten. show_at() runs its own git for the same kind
+    of reason — the bytes matter there too.
+    """
+    try:
+        p = subprocess.run(("git", "-C", VAULT, "--no-optional-locks") + args,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           timeout=10, text=True, env=GIT_ENV)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return p.stdout if p.returncode == 0 else None
+
+
 def git_fresh():
     """Forget the cached status — call after anything that writes."""
     _git_cache["info"] = None
@@ -513,12 +542,13 @@ def ref_name(text, fallback="unknown"):
     return name[:40] or fallback
 
 
-def commit_message(verb, full, content=None, client=None):
+def commit_message(verb, full, content=None, client=None, note=None):
     """Built here, never taken from a request. Subject is the note's title,
     which is what a `git log --oneline` is actually read for; the path goes
     in the body, where two notes with one title stay tellable apart, and the
     client that wrote it goes in a trailer so the history says which device
-    an edit came from."""
+    an edit came from. `note` is one more body line for the cases where the
+    path alone does not say what happened — a rename, which has two."""
     if content is None:
         try:
             content = open(full, encoding="utf-8").read()
@@ -528,7 +558,9 @@ def commit_message(verb, full, content=None, client=None):
     title = meta.get("title") or os.path.basename(full)[:-3]
     rel = os.path.relpath(full, VAULT)
     trailer = "\nClient: %s\n" % client["label"] if client else ""
-    return "%s %s\n\n%s\n%s" % (verb, title.replace("\n", " ")[:60], rel, trailer)
+    extra = "\n" + note if note else ""
+    return "%s %s\n\n%s%s\n%s" % (verb, title.replace("\n", " ")[:60],
+                                   rel, extra, trailer)
 
 
 # --------------------------------------------------------------------------
@@ -559,6 +591,21 @@ def client_label(agent):
     return "%s on %s" % (browser, platform) if platform else browser
 
 
+def clean_label(text):
+    """A client's own name for itself, made fit to show.
+
+    The User-Agent guess is right for browsers and wrong for everything else:
+    a script, a shell one-liner, an agent with a file tool all come out as
+    "browser", which makes the one line of history that says where an edit
+    came from a lie. So a client may name itself. That name is only ever
+    displayed and — at registration, through ref_name() — turned into a
+    branch, so what it loses here is anything that is not plain printable
+    text, and its length.
+    """
+    text = re.sub(r"\s+", " ", (text or "").replace("\n", " "))
+    return re.sub(r"[^ \w.+@()/-]+", "", text).strip()[:40]
+
+
 def load_clients():
     global CLIENTS
     try:
@@ -578,13 +625,22 @@ def save_clients():
         pass                                  # a client cairn forgets re-registers
 
 
-def client_for(cid, agent, create=True):
-    """The record for one browser session, registering it the first time.
+def client_for(cid, agent, create=True, name=None):
+    """The record for one client, registering it the first time.
 
     Returns None when there is no usable id — a request with no client cookie
-    is served exactly as before, it just gets no branch and no "changed
-    elsewhere" notice.
+    and no name of its own is served exactly as before, it just gets no branch
+    and no "changed elsewhere" notice.
     """
+    name = clean_label(name)
+    if not cid and name:
+        # A writer that is not a browser has no cookie to carry an id, and
+        # asking a script to hold one would be asking it to be a browser. Its
+        # name is its identity instead: the same agent gets the same record
+        # and the same branch across runs, which is what makes "changed on
+        # another device" true of it too. The digest is only to get a legal
+        # id out of arbitrary text; nothing is hidden by it.
+        cid = "agent-" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:16]
     if not cid or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", cid):
         return None
     with CLIENTS_LOCK:
@@ -592,10 +648,14 @@ def client_for(cid, agent, create=True):
         if rec is None:
             if not create:
                 return None
-            label = client_label(agent)
+            label = name or client_label(agent)
             rec = {"label": label, "first": time.time(),
                    "branch": CLIENT_PREFIX + ref_name(label, "client") + "-" + cid[:8]}
             CLIENTS[cid] = rec
+        elif name and rec.get("label") != name:
+            # A renamed client keeps the branch it was given: the branch is a
+            # bookmark with a name on it, not the name itself.
+            rec["label"] = name
         rec["last"] = time.time()
         rec.setdefault("label", "browser")
         rec.setdefault("branch", CLIENT_PREFIX + "unknown-" + cid[:8])
@@ -694,21 +754,28 @@ def clients_info(me=None):
 
 
 def git_commit(rel, message):
-    """Stage one path and commit only that path. (ok, output).
+    """Stage one path — or a list of them — and commit only those. (ok, output).
 
     The pathspec is what keeps a save from sweeping up whatever else is dirty
     in the tree — a note the user is editing in another program, an image
     half-copied into attachments/. It also means the hook only ever sees the
     file this save is about.
+
+    A list is for the one operation that is genuinely several paths at once:
+    a rename, which is the note under its new name plus every note whose
+    links were repointed at it, and which has to be one commit or none.
     """
-    code, out = git("add", "--", rel)
+    rels = [rel] if isinstance(rel, str) else list(rel)
+    # -A so a path that is a deletion stages as one; `git add` without it
+    # predates git 2.0 caring, and remove_note has always passed it.
+    code, out = git("add", "-A", "--", *rels)
     if code:
         return False, out
     # Identical bytes: a save that changed nothing is a success with nothing
     # to record, not an empty commit and not an error.
-    if git("diff", "--cached", "--quiet", "--", rel)[0] == 0:
+    if git("diff", "--cached", "--quiet", "--", *rels)[0] == 0:
         return True, ""
-    code, out = git("commit", "-q", "-m", message, "--", rel)
+    code, out = git("commit", "-q", "-m", message, "--", *rels)
     return code == 0, out
 
 
@@ -738,6 +805,126 @@ def git_restore(rel, tracked):
             os.remove(os.path.join(VAULT, rel))
         except OSError:
             pass
+
+
+# --------------------------------------------------------------------------
+# what something other than cairn wrote
+# --------------------------------------------------------------------------
+#
+# Not every edit arrives over HTTP. A note can be written straight onto disk
+# by an editor, a script, or an agent with a file tool — and until that edit
+# is committed it is invisible to everything cairn does with history. Worse
+# than invisible: trunk has not moved, so a browser save carrying `base ==
+# HEAD` skips the merge in save_note() and writes over it, and because the
+# outside version was never committed there is nothing to recover it from.
+#
+# So an outside edit is adopted, one note at a time, and as soon as cairn
+# notices it. Per-note because a commit called "Adopt changes made outside
+# cairn" covering fourteen unrelated notes is not history — it is a lump with
+# no title, no path, and nobody's name on it, and the history panel can say
+# nothing useful about any note in it. Adopting it properly costs one commit
+# each and makes the other four things true at once: `git log -- <note>` has
+# the version in it, the panel names who wrote it, trunk moves, and the next
+# browser save is a merge instead of an overwrite.
+
+# The client label for an edit that did not come through the API. It is a
+# client record in the sense commit_message() cares about — a thing with a
+# label — and nothing else: no id, no branch, no session.
+OUTSIDE = {"label": "outside cairn"}
+
+
+def outside_paths():
+    """Every path the working tree and HEAD disagree about: [(rel, verb)].
+
+    `-z` because the alternative is git's quoted paths, and a note called
+    `Ça va.md` is not an edge case in a vault of prose. `--untracked-files=all`
+    so a whole new folder of notes lists as its notes rather than as the
+    folder. A rename someone else staged carries its old name in a field of
+    its own; that name is taken too, so nothing is left for the sweep.
+    """
+    out = _git_raw("status", "--porcelain", "-z", "--untracked-files=all")
+    if not out:
+        return []
+    fields = out.split("\0")
+    rows, i = [], 0
+    while i < len(fields):
+        entry, i = fields[i], i + 1
+        if len(entry) < 4:
+            continue
+        code, rel = entry[:2], entry[3:]
+        if code[0] in "RC":
+            old = fields[i] if i < len(fields) else ""
+            i += 1
+            if old:
+                rows.append((old, "Delete"))
+        if "D" in code:
+            verb = "Delete"
+        elif code == "??" or code[0] == "A":
+            verb = "Add"
+        else:
+            verb = "Update"
+        rows.append((rel, verb))
+    return rows
+
+
+def adopt_outside(label=None):
+    """Commit what arrived on disk, a note per commit. (adopted, refused).
+
+    Each note gets the commit it would have got had it been saved through the
+    browser: its title as the subject, its path in the body, and a Client
+    trailer naming where the edit came from. Anything that is not a note — an
+    image dropped into attachments/, a file the vault's own tooling wrote —
+    is swept up at the end in one commit, because a title is not a thing it
+    has.
+
+    A note the repository refuses is left exactly as it is, on disk and out of
+    the index, and the notes beside it still land. That is the difference
+    between this and the single commit it replaces: one credential-shaped
+    string in one note used to mean nothing at all could be adopted.
+
+    The caller holds GIT_LOCK.
+    """
+    rows = outside_paths()
+    if not rows:
+        return [], []
+    who = dict(OUTSIDE, label=label) if label else OUTSIDE
+    adopted, refused, others = [], [], []
+    for rel, verb in rows:
+        if not rel.lower().endswith(".md"):
+            others.append(rel)
+            continue
+        full = os.path.join(VAULT, rel)
+        ok, out = git_commit(rel, commit_message(verb, full, None, who))
+        if ok:
+            adopted.append(rel)
+        else:
+            # Unstage, and nothing more. The bytes on disk are not cairn's to
+            # roll back here — they are somebody's unsaved work, and the only
+            # copy of it. write_note() restores a file because it wrote it;
+            # this did not.
+            git("reset", "-q", "--", rel)
+            refused.append((rel, out))
+    if others:
+        ok, out = git_commit(others, "Adopt files that are not notes")
+        if ok:
+            adopted.extend(others)
+        else:
+            git("reset", "-q", "--", *others)
+            refused.append((", ".join(others[:4]), out))
+    if adopted or refused:
+        git_fresh()
+    return adopted, refused
+
+
+def adopt_and_log(label=None):
+    """adopt_outside(), with what it did written to the activity panel."""
+    adopted, refused = adopt_outside(label)
+    for rel in adopted:
+        log_run("adopted %s — written outside cairn" % rel)
+    for rel, why in refused:
+        log_run("could not adopt %s — %s" % (rel, (why or "").splitlines()[0]
+                                             if why else "the commit was refused"), "err")
+    return adopted, refused
 
 
 # --------------------------------------------------------------------------
@@ -865,6 +1052,14 @@ def save_note(full, content, client=None, base=None):
     """
     rel = os.path.relpath(full, VAULT)
     with GIT_LOCK:
+        # Anything written to the vault from outside gets its history before
+        # this save gets its own. Without that, an edit made on disk since
+        # this browser last read leaves trunk where it was, `base == head`
+        # skips the merge below, and the save replaces it with no trace of
+        # what was there — which is the one outcome invariant 8 exists to
+        # prevent. Committing it first turns that case back into a merge.
+        if git_dirty():
+            adopt_and_log()
         head = _git("rev-parse", "HEAD")
         merged = False
         if base and head and base != head and os.path.isfile(full):
@@ -937,6 +1132,11 @@ def remove_note(full, client=None):
     """
     rel = os.path.relpath(full, VAULT)
     with GIT_LOCK:
+        # Same reason as save_note(): an edit made outside cairn and never
+        # committed would go into the trash without ever having been in the
+        # history, and trash and history are different jobs.
+        if git_dirty():
+            adopt_and_log()
         dest = stamped(TRASH_DIR, full)
         shutil.move(full, dest)
         message = commit_message("Delete", full, "", client)
@@ -951,6 +1151,189 @@ def remove_note(full, client=None):
             return dest, out
         client_mark(client)
         return dest, None
+
+
+# --------------------------------------------------------------------------
+# renaming a note
+# --------------------------------------------------------------------------
+#
+# A rename is a move and a link rewrite, and it is one commit or none. The
+# link rewrite is the part that makes it worth doing in the app at all: `mv`
+# is one command, but a vault where half the [[wikilinks]] point at a name
+# nothing has any more is worse than one where the note kept its old title.
+# git records the move itself — `git add -A -- <old> <new>` and git works out
+# that it is a rename — so `git log --follow` walks a note's history straight
+# through it.
+
+WIKILINK = re.compile(r"(!?)\[\[([^\]\n|#]+)([^\]\n]*)\]\]")
+
+
+def link_names(rel):
+    """The two ways a wikilink can name one note: by its bare filename, and
+    by its vault-relative path. Both without the extension, which links
+    normally leave off."""
+    return os.path.basename(rel)[:-3], rel[:-3]
+
+
+def retarget(text, old_rel, new_rel):
+    """Point every [[wikilink]] and ![[embed]] at a note's new name.
+
+    A link that named the note by its filename keeps naming it that way; one
+    that spelled out the folder keeps the folder. Rewriting one style into
+    the other would churn every note in the vault the first time anybody
+    renamed anything, and the diff is meant to be readable.
+    """
+    old_stem, old_path = link_names(old_rel)
+    new_stem, new_path = link_names(new_rel)
+
+    def one(m):
+        bang, target, rest = m.group(1), m.group(2), m.group(3)
+        name = target.strip()
+        bare = name[:-3] if name.lower().endswith(".md") else name
+        if bare.lower() == old_path.lower():
+            now = new_path
+        elif bare.lower() == old_stem.lower():
+            now = new_stem
+        else:
+            return m.group(0)
+        if name.lower().endswith(".md"):
+            now += name[-3:]
+        return "%s[[%s%s]]" % (bang, now, rest)
+
+    return WIKILINK.sub(one, text)
+
+
+def rename_note(full, dest, client=None):
+    """Move one note, repoint the links that name it, commit all of it once.
+
+    Both or neither, the same rule a save keeps: if the repository refuses
+    the commit, the note goes back under its old name and every rewritten
+    link goes back to the bytes it had.
+    """
+    old_rel = os.path.relpath(full, VAULT)
+    new_rel = os.path.relpath(dest, VAULT)
+    with GIT_LOCK:
+        if os.path.exists(dest):
+            return {"ok": False, "error": "a note with that name already exists"}
+        # Whatever is on disk gets its own history before the move does, so a
+        # rename cannot swallow an edit that was never committed.
+        if git_dirty():
+            adopt_and_log()
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            os.replace(full, dest)
+        except OSError as e:
+            return {"ok": False, "error": "could not move the note — %s" % e}
+
+        # A note whose frontmatter title was its filename had the two in
+        # step, and the sidebar shows the title — so renaming the file and
+        # leaving the title behind would rename nothing the user can see. A
+        # title that was already something else was chosen, and is left alone.
+        retitled = None
+        try:
+            text = open(dest, encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError):
+            text = None
+        if text is not None:
+            meta, _ = parse_frontmatter(text)
+            old_stem, new_stem = link_names(old_rel)[0], link_names(new_rel)[0]
+            if meta.get("title", "").strip() == old_stem:
+                # Kept, because the rollback below has to put this back too:
+                # a refused rename that left the note under its old name with
+                # its new title in the frontmatter would be half a rename.
+                retitled = text
+                atomic_write(dest, re.sub(r"(?m)\A(---\n(?:.*\n)*?title:).*$",
+                                          lambda m: m.group(1) + " " + new_stem,
+                                          text, count=1))
+
+        touched, originals = [old_rel, new_rel], {}
+        for note in list_notes():
+            if note["path"] == new_rel:
+                continue
+            fixed = retarget(note["raw"], old_rel, new_rel)
+            if fixed != note["raw"]:
+                originals[note["path"]] = note["raw"]
+                atomic_write(os.path.join(VAULT, note["path"]), fixed)
+                touched.append(note["path"])
+
+        ok, out = git_commit(touched, commit_message(
+            "Rename", dest, None, client, note="was " + old_rel))
+        if not ok:
+            for rel, was in originals.items():
+                atomic_write(os.path.join(VAULT, rel), was)
+            try:
+                os.replace(dest, full)
+                if retitled is not None:
+                    atomic_write(full, retitled)
+            except OSError:
+                pass
+            git("reset", "-q", "--", *touched)
+            git_fresh()
+            return {"ok": False, "refused": out}
+
+        # The folder a note was the last thing in is not a folder any more.
+        # git does not track directories, so nothing else would remove it.
+        old_dir = os.path.dirname(full)
+        if old_dir != VAULT:
+            try:
+                os.rmdir(old_dir)
+            except OSError:
+                pass
+        client_mark(client)
+        git_fresh()
+        log_run("renamed %s to %s" % (old_rel, new_rel))
+        return {"ok": True, "path": new_rel, "was": old_rel,
+                "relinked": sorted(originals),
+                "commit": _git("rev-parse", "--short", "HEAD") or "",
+                "head": _git("rev-parse", "HEAD"),
+                "mtime": os.path.getmtime(dest)}
+
+
+LOG_FORMAT = "--format=%H%x1f%h%x1f%ct%x1f%s%x1f%b%x1e"
+RENAMED_FROM = re.compile(r"(?m)^was (.+)$")
+
+
+def parse_log(out):
+    """git log, as written by LOG_FORMAT, into what the history panel draws."""
+    versions = []
+    for chunk in (out or "").split("\x1e"):
+        bits = chunk.strip("\n").split("\x1f")
+        if len(bits) >= 4 and bits[2].isdigit():
+            body = bits[4] if len(bits) > 4 else ""
+            who = re.search(r"(?m)^Client: (.+)$", body)
+            versions.append({"sha": bits[0], "short": bits[1], "at": int(bits[2]),
+                             "subject": bits[3], "body": body,
+                             "client": who.group(1) if who else None})
+    return versions
+
+
+def note_history(rel, limit=40):
+    """Every version of one note, back through the renames it has had.
+
+    Not `git log --follow`: that asks git to guess from content similarity,
+    and two notes made from the same frontmatter scaffold are similar enough
+    for it to graft one note's history onto another that is still sitting
+    there. cairn does not have to guess. It wrote `was <path>` into the body
+    of every rename commit it made, so the chain is a fact recorded in the
+    history rather than an inference drawn from it.
+    """
+    versions, seen, path = [], set(), rel
+    since = []                               # the commit to walk back from
+    while path and path not in seen and len(versions) < limit:
+        seen.add(path)
+        out = _git("log", "-%d" % (limit - len(versions)), LOG_FORMAT,
+                   *(since + ["--", path]))
+        batch = parse_log(out)
+        versions += batch
+        # A rename cairn made is the oldest thing this path can have: before
+        # it, the note was somewhere else.
+        was = RENAMED_FROM.search(batch[-1]["body"]) if batch else None
+        if not was or not batch[-1]["subject"].startswith("Rename "):
+            break
+        path, since = was.group(1).strip(), [batch[-1]["sha"] + "^"]
+    for v in versions:
+        v.pop("body", None)
+    return versions
 
 
 def git_start():
@@ -1032,12 +1415,16 @@ def git_start():
     # commit" false from the first request: the next save would carry along
     # whatever else was lying around. So it is adopted, or cairn does not run.
     if git_dirty():
-        ok, out = git_commit_all("Adopt changes made outside cairn")
-        if not ok:
-            sys.exit("changes already in the vault could not be committed:\n\n%s\n\n"
-                     "Fix or remove what the hook objects to, then start cairn "
-                     "again." % out)
-        print("  git   : committed changes that were already in the vault")
+        adopted, refused = adopt_outside()
+        if refused:
+            sys.exit("changes already in the vault could not be committed:\n\n"
+                     "%s\n\nFix or remove what the hook objects to, then start "
+                     "cairn again."
+                     % "\n\n".join("%s:\n%s" % r for r in refused))
+        print("  git   : committed %d change%s that were already in the vault"
+              % (len(adopted), "" if len(adopted) == 1 else "s")
+              if len(adopted) != 1 else
+              "  git   : committed one change that was already in the vault")
     git_fresh()
 
 
@@ -1303,10 +1690,12 @@ def run_backup():
     # they are is worth more than a clean pair of files, and the record says
     # which it got.
     if git_dirty():
-        ok, out = git_commit_all("Adopt changes made outside cairn")
-        say("committed changes that were already in the vault"
-            if ok else out, "out" if ok else "err")
-        dirty = None if ok else (out or "the tree could not be committed")
+        adopted, refused = adopt_outside()
+        for rel in adopted:
+            say("committed %s, which was already in the vault" % rel)
+        for rel, why in refused:
+            say("%s could not be committed — %s" % (rel, why), "err")
+        dirty = ", ".join(r for r, _ in refused) or None
     record = {"at": started, "ok": False, "vault": VAULT,
               "commit": _git("rev-parse", "HEAD"), "uncommitted": dirty,
               "branch": TRUNK, "name": stem}
@@ -1943,13 +2332,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.cookie(COOKIE)
 
     def client(self, create=True):
-        """The browser session behind this request, or None if it has no id.
+        """The session behind this request, or None if it has no id.
 
         Everything works without one — the id only buys a branch and the
-        notice that another device has moved the notes.
+        notice that another device has moved the notes. A client that is not
+        a browser names itself in X-Cairn-Client; a page in another tab could
+        not send that header without a preflight this server refuses, so it
+        is no more forgeable than the token already is.
         """
         return client_for(self.cookie(CLIENT_COOKIE),
-                          self.headers.get("User-Agent"), create=create)
+                          self.headers.get("User-Agent"), create=create,
+                          name=self.headers.get(CLIENT_HEADER))
 
     def query_token(self):
         return urllib.parse.parse_qs(
@@ -1960,6 +2353,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         host = self.client_address[0]
         return host.startswith("127.") or host in ("::1", "::ffff:127.0.0.1")
 
+    def bearer_token(self):
+        """`Authorization: Bearer <token>`, for callers that are not browsers.
+
+        The same token, presented the way every HTTP client already knows how
+        to present one — which is the difference between a script that can
+        write a note in one call and one that has to POST the unlock form and
+        keep a cookie jar. It is not a second way in: no header, no token, no
+        entry, and the cross-origin refusal above still runs first.
+        """
+        scheme, _, value = (self.headers.get("Authorization") or "").partition(" ")
+        return value.strip() if scheme.lower() == "bearer" else ""
+
     def authed(self):
         """Token gate. Also refuses cross-origin requests outright."""
         origin = self.headers.get("Origin")
@@ -1967,7 +2372,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             host = self.headers.get("Host", "")
             if urllib.parse.urlparse(origin).netloc != host:
                 return False
-        for given in (self.headers.get("X-Notes-Token"), self.cookie_token(), self.query_token()):
+        for given in (self.headers.get("X-Notes-Token"), self.bearer_token(),
+                      self.cookie_token(), self.query_token()):
             if given and secrets.compare_digest(given, TOKEN):
                 return True
         return False
@@ -2038,22 +2444,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/notes":
             if not self.authed():
                 return self.fail(403, "not unlocked")
-            notes = list_notes()
-            # This client has now read the whole vault, so its branch moves to
-            # the commit it read — which is what the next save merges against
-            # and what "changed on another device" is counted from.
+            # Anything written to the vault while cairn was running is
+            # committed here, before the vault is read, so that what this
+            # response carries and the commit it names are the same thing.
+            # Startup is too late for it: a note an agent or an editor wrote
+            # an hour ago would have no history until the next restart, and
+            # the first browser save on top of it would silently replace it.
             #
-            # Non-blocking: a backup can hold the lock for a while, and a page
-            # load waiting on one would look like a hung server. Skipping the
-            # mark costs this client one stale "changed elsewhere" line until
-            # its next read, which is a much smaller thing to be wrong about.
-            head = _git("rev-parse", "HEAD")
+            # Non-blocking, and all three steps under the one lock: a backup
+            # can hold it for a while, and a page load waiting on one would
+            # look like a hung server. Skipping the whole block costs this
+            # client one stale "changed elsewhere" line and one late
+            # adoption, which are much smaller things to be wrong about.
+            notes, head = None, None
             if GIT_LOCK.acquire(blocking=False):
                 try:
-                    head = client_mark(self.client()) or head
+                    if git_dirty():
+                        adopt_and_log()
+                    notes = list_notes()
+                    # This client has now read the whole vault, so its branch
+                    # moves to the commit it read — which is what the next
+                    # save merges against and what "changed on another
+                    # device" is counted from.
+                    head = client_mark(self.client())
                 finally:
                     GIT_LOCK.release()
                 git_fresh()
+            if notes is None:
+                notes = list_notes()
+            if head is None:
+                head = _git("rev-parse", "HEAD")
             return self.send_json(200, {"ok": True, "notes": notes,
                                         "images": list_images(), "vault": VAULT,
                                         "head": head,
@@ -2078,22 +2498,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.fail(403, "not unlocked")
             q = urllib.parse.parse_qs(url.query)
             rel = (q.get("path") or [""])[0]
-            args = ["log", "-40", "--format=%H%x1f%h%x1f%ct%x1f%s%x1f%b%x1e"]
             if rel:
                 try:
                     safe_path(rel)
                 except ValueError as e:
                     return self.fail(400, str(e))
-                args += ["--", rel]
-            out = _git(*args) or ""
-            versions = []
-            for chunk in out.split("\x1e"):
-                bits = chunk.strip("\n").split("\x1f")
-                if len(bits) >= 4 and bits[2].isdigit():
-                    client = re.search(r"(?m)^Client: (.+)$", bits[4] if len(bits) > 4 else "")
-                    versions.append({"sha": bits[0], "short": bits[1],
-                                     "at": int(bits[2]), "subject": bits[3],
-                                     "client": client.group(1) if client else None})
+                versions = note_history(rel)
+            else:
+                versions = parse_log(_git("log", "-40", LOG_FORMAT))
+                for v in versions:
+                    v.pop("body", None)
             return self.send_json(200, {"ok": True, "path": rel,
                                         "versions": versions})
 
@@ -2262,6 +2676,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                         "commit": detail, "content": body,
                                         "head": _git("rev-parse", "HEAD"),
                                         "mtime": os.path.getmtime(full)})
+
+        if route == "/api/rename":
+            # Two paths from the request, both through safe_path(), which is
+            # what keeps a rename inside the vault and on a .md file. Neither
+            # ever reaches git as anything but a pathspec after `--`.
+            try:
+                data = self.body_json()
+                full = safe_path(data["path"], must_exist=True)
+                dest = safe_path(data["to"])
+            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                return self.fail(400, str(e))
+            if os.path.normcase(dest) == os.path.normcase(full):
+                return self.fail(400, "that is the name it already has")
+            result = rename_note(full, dest, self.client())
+            if result.get("refused") is not None:
+                return self.send_json(422, {
+                    "ok": False, "refused": result["refused"],
+                    "error": "the vault's git hook refused this rename"})
+            if not result["ok"]:
+                return self.fail(409, result["error"])
+            return self.send_json(200, result)
 
         if route == "/api/backup":
             # Nothing in the body is read. Where a backup goes was decided on

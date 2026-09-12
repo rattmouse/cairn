@@ -842,19 +842,36 @@ def test_git(vault, port):
         p.terminate(); p.wait(timeout=5)
         os.remove(hook)
 
-    # --- a dirty tree at startup is adopted, in one commit -------------
+    # --- a dirty tree at startup is adopted, a commit per note ---------
     with open(os.path.join(vault, "Notes", "Outside.md"), "w") as f:
         f.write("# Outside\n\nWritten by something that is not cairn.\n")
+    with open(os.path.join(vault, "Notes", "Beta.md"), "a") as f:
+        f.write("\nAlso written by something that is not cairn.\n")
+    with open(os.path.join(vault, "attachments", "dropped.txt"), "w") as f:
+        f.write("not a note\n")
     before = int(git(vault, "rev-list", "--count", "HEAD"))
     p, token, log = start(vault, port)
     try:
         check("a tree that was dirty at startup is committed",
               git(vault, "status", "--porcelain") == "",
               git(vault, "status", "--porcelain"))
-        check("in a single commit that says so",
-              int(git(vault, "rev-list", "--count", "HEAD")) == before + 1
-              and git(vault, "log", "-1", "--format=%s") == "Adopt changes made outside cairn",
-              git(vault, "log", "-1", "--format=%s"))
+        subjects = git(vault, "log", "-3", "--format=%s").splitlines()
+        check("each note gets a commit of its own, titled",
+              sorted(subjects) == sorted(["Adopt files that are not notes",
+                                          "Add Outside", "Update Beta"]), subjects)
+        check("and only those commits",
+              int(git(vault, "rev-list", "--count", "HEAD")) == before + 3,
+              int(git(vault, "rev-list", "--count", "HEAD")) - before)
+        body = git(vault, "log", "-3", "--format=%b")
+        check("each one says where the edit came from",
+              body.count("Client: outside cairn") == 2, body)
+        check("and names the note it is about", "Notes/Outside.md" in body)
+        # The sweep goes last, so it is HEAD: everything with a title got
+        # its own commit before anything without one was touched.
+        check("what is not a note is swept up separately",
+              git(vault, "log", "-1", "--format=%s") == "Adopt files that are not notes"
+              and "attachments/dropped.txt" in git(vault, "show", "--name-only",
+                                                   "--format=", "HEAD"))
         check("and it is announced", "already in the vault" in log)
     finally:
         p.terminate(); p.wait(timeout=5)
@@ -1030,6 +1047,325 @@ def test_clients(vault, port):
     finally:
         p.terminate(); p.wait(timeout=5)
         shutil.rmtree(state, ignore_errors=True)
+
+
+def test_outside(vault, port):
+    """A note written straight onto disk, while cairn is running.
+
+    This is what a script — or an agent with a file tool — actually does, and
+    every claim cairn makes about history has to survive it: the note gets a
+    commit of its own, that commit says where it came from, and the next
+    browser save merges with it instead of writing over it.
+    """
+    print("\noutside cairn")
+
+    if not shutil.which("git"):
+        check("git is installed to test against", False, "skipped")
+        return
+
+    p, token, _ = start(vault, port)
+    try:
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        notes_of(op, base)                       # a clean read to start from
+
+        path = os.path.join(vault, "Notes", "Written.md")
+        with open(path, "w") as f:
+            f.write("---\ntitle: Written elsewhere\ntags: []\n---\n\n"
+                    "# Written elsewhere\n\nBy something that is not cairn.\n")
+        before = int(git(vault, "rev-list", "--count", "HEAD"))
+        check("a note written on disk is not committed by writing it",
+              git(vault, "status", "--porcelain") != "")
+
+        r = notes_of(op, base)
+        titles = [n["title"] for n in r["notes"]]
+        check("reading the vault adopts it", git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+        check("in one commit, with the note's own title",
+              int(git(vault, "rev-list", "--count", "HEAD")) == before + 1
+              and git(vault, "log", "-1", "--format=%s") == "Add Written elsewhere",
+              git(vault, "log", "-1", "--format=%s"))
+        check("and the note is in the response", "Written elsewhere" in titles)
+        check("the commit the response names is the one just made",
+              r["head"] == git(vault, "rev-parse", "HEAD"), r["head"])
+
+        # --- and therefore it has a history -------------------------------
+        h = json.loads(call(op, base + "/api/history?path=Notes/Written.md")[1])
+        check("the note has a version in its history", len(h["versions"]) == 1,
+              h["versions"])
+        check("which says the edit came from outside cairn",
+              h["versions"][0]["client"] == "outside cairn", h["versions"][0])
+
+        # --- a browser save on top of it merges, it does not overwrite ----
+        # The browser is holding the note as it was before the outside edit,
+        # with the `base` it read then. That is the shape that used to lose
+        # the outside edit silently: trunk had not moved, so nothing merged.
+        listing = notes_of(op, base)
+        alpha = next(n for n in listing["notes"] if n["title"] == "Alpha")
+        stale_base, mine = listing["head"], alpha["raw"] + "\nfrom the browser\n"
+        with open(os.path.join(vault, alpha["path"]), "w") as f:
+            f.write("from the vault\n" + alpha["raw"])
+        s_, b = put(op, base, alpha["path"], mine, base=stale_base)
+        got = json.loads(b)
+        on_disk = open(os.path.join(vault, alpha["path"]), encoding="utf-8").read()
+        check("a save on top of an outside edit succeeds", s_ == 200, s_)
+        check("and keeps both sides", got.get("merged") is True
+              and "from the vault" in on_disk and "from the browser" in on_disk,
+              on_disk[:60])
+        check("the outside edit is in the history in its own right",
+              "Update Alpha" in git(vault, "log", "-2", "--format=%s")
+              and "outside cairn" in git(vault, "log", "-2", "--format=%b"),
+              git(vault, "log", "-2", "--format=%s"))
+
+        # --- a note deleted on disk is adopted as a deletion --------------
+        os.remove(os.path.join(vault, "Notes", "Written.md"))
+        notes_of(op, base)
+        check("a note removed on disk is adopted as a deletion",
+              git(vault, "log", "-1", "--format=%s") == "Delete Written",
+              git(vault, "log", "-1", "--format=%s"))
+        check("and the tree is clean again",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+
+def test_agent(vault, port):
+    """A client that is not a browser: the token in an Authorization header,
+    and a name of its own instead of a guess at a User-Agent."""
+    print("\nclients that are not browsers")
+
+    p, token, _ = start(vault, port)
+    try:
+        base = "http://127.0.0.1:%d" % port
+        bare = urllib.request.build_opener()     # no cookie jar: a script
+        bearer = {"Authorization": "Bearer " + token,
+                  "Content-Type": "application/json"}
+
+        s_, b = call(bare, base + "/api/notes", headers=bearer)
+        check("a bearer token is a session", s_ == 200, s_)
+        check("and reads the vault with no cookie at all",
+              s_ == 200 and json.loads(b)["notes"], s_)
+        s_, _ = call(bare, base + "/api/notes",
+                     headers={"Authorization": "Bearer not-the-token"})
+        check("a wrong bearer token is refused", s_ == 403, s_)
+        s_, _ = call(bare, base + "/api/notes", headers={"Authorization": "Basic " + token})
+        check("and so is the right token under the wrong scheme", s_ == 403, s_)
+
+        # --- writing, named ----------------------------------------------
+        named = dict(bearer, **{"X-Cairn-Client": "Claude Code"})
+        s_, b = call(bare, base + "/api/new",
+                     data=json.dumps({"path": "Notes/Agent.md",
+                                      "title": "Agent"}).encode(),
+                     method="POST", headers=named)
+        check("a script can create a note in one call", s_ == 200, s_)
+        check("the commit is attributed to the name it gave",
+              "Client: Claude Code" in git(vault, "log", "-1", "--format=%b"),
+              git(vault, "log", "-1", "--format=%b"))
+
+        made = json.loads(b)
+        s_, b = call(bare, base + "/api/note",
+                     data=json.dumps({"path": made["path"],
+                                      "content": made["content"] + "\nA line.\n",
+                                      "base": made["head"]}).encode(),
+                     method="PUT", headers=named)
+        check("and save it in another", s_ == 200, s_)
+        h = json.loads(call(bare, base + "/api/history?path=Notes/Agent.md",
+                            headers=bearer)[1])
+        check("its history reads back under that name",
+              [v["client"] for v in h["versions"]] == ["Claude Code", "Claude Code"],
+              [v["client"] for v in h["versions"]])
+
+        # --- one name, one branch, across calls ---------------------------
+        branches = [b_ for b_ in git(vault, "branch", "--list", "client/*").splitlines()
+                    if "claude" in b_.lower()]
+        check("a named client gets one branch, not one per request",
+              len(branches) == 1, branches)
+
+        st = json.loads(call(bare, base + "/api/status", headers=named)[1])
+        check("and the footer knows what it is called",
+              st["clients"]["you"] == "Claude Code", st["clients"].get("you"))
+
+        # --- a name is text to display, never a command -------------------
+        nasty = dict(bearer, **{"X-Cairn-Client": "rm -rf /; $(whoami) ../../etc"})
+        s_, _ = call(bare, base + "/api/note",
+                     data=json.dumps({"path": made["path"],
+                                      "content": made["content"] + "\nTwo.\n",
+                                      "base": git(vault, "rev-parse", "HEAD")}).encode(),
+                     method="PUT", headers=nasty)
+        trailer = git(vault, "log", "-1", "--format=%b")
+        check("a hostile client name still saves", s_ == 200, s_)
+        # The label is text to show. It never reaches a shell — no git call
+        # goes through one — so what matters is that it is inert where it
+        # lands: legible in a commit trailer, and legal as a ref.
+        check("and reaches the commit stripped of shell punctuation",
+              "$" not in trailer and ";" not in trailer,
+              trailer.strip().splitlines()[-1:])
+        made_branch = [b_.strip() for b_ in
+                       git(vault, "branch", "--list", "client/*").splitlines()
+                       if "rf" in b_]
+        check("and makes a legal branch name out of it",
+              len(made_branch) == 1
+              and re.fullmatch(r"client/[A-Za-z0-9._/-]+", made_branch[0])
+              and ".." not in made_branch[0], made_branch)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+
+def test_rename(vault, port):
+    """Renaming a note: the file moves, the links follow, one commit."""
+    print("\nrenaming")
+
+    p, token, _ = start(vault, port)
+    try:
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        notes_of(op, base)
+
+        # README.md links to [[Alpha]]; give it a path-style link too. Alpha
+        # itself is put back the way make_vault() wrote it — an earlier test
+        # left it without frontmatter, and the title is part of what a rename
+        # has to keep up with.
+        readme = os.path.join(vault, "README.md")
+        with open(readme, "a") as f:
+            f.write("\nAlso [[Notes/Alpha|by path]] and ![[Alpha]] and [[Alphabet]].\n")
+        with open(os.path.join(vault, "Notes", "Alpha.md"), "w") as f:
+            f.write("---\ntitle: Alpha\ntags: [x, y]\nupdated: 2020-01-01\n---\n\n"
+                    "# Alpha\n\nBody text.\n")
+        notes_of(op, base)                       # adopt both, so the tree is clean
+
+        locked, _ = client()
+        s_, _ = call(locked, base + "/api/rename",
+                     data=json.dumps({"path": "Notes/Alpha.md",
+                                      "to": "Notes/Stolen.md"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("a rename without the token is refused", s_ == 403, s_)
+        check("and moved nothing",
+              os.path.isfile(os.path.join(vault, "Notes", "Alpha.md")))
+
+        before = int(git(vault, "rev-list", "--count", "HEAD"))
+        s_, b = call(op, base + "/api/rename",
+                     data=json.dumps({"path": "Notes/Alpha.md",
+                                      "to": "Notes/Renamed.md"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        r = json.loads(b)
+        check("a rename answers", s_ == 200, (s_, b[:120]))
+        check("the file moved",
+              os.path.isfile(os.path.join(vault, "Notes", "Renamed.md"))
+              and not os.path.exists(os.path.join(vault, "Notes", "Alpha.md")))
+        check("in exactly one commit",
+              int(git(vault, "rev-list", "--count", "HEAD")) == before + 1,
+              int(git(vault, "rev-list", "--count", "HEAD")) - before)
+        check("which git records as a rename",
+              "R" in git(vault, "show", "--name-status", "--format=", "HEAD").split("\t")[0],
+              git(vault, "show", "--name-status", "--format=", "HEAD"))
+        check("and says what it was called before",
+              "was Notes/Alpha.md" in git(vault, "log", "-1", "--format=%b"),
+              git(vault, "log", "-1", "--format=%b"))
+
+        text = open(readme, encoding="utf-8").read()
+        check("a link by filename follows the note", "[[Renamed]]" in text, text[-160:])
+        check("a link by path keeps its path and its alias",
+              "[[Notes/Renamed|by path]]" in text, text[-160:])
+        check("an embed follows it too", "![[Renamed]]" in text)
+        check("a link that only looks similar is left alone", "[[Alphabet]]" in text)
+        check("the rename says which notes it relinked",
+              r["relinked"] == ["README.md"], r.get("relinked"))
+
+        moved = open(os.path.join(vault, "Notes", "Renamed.md"), encoding="utf-8").read()
+        check("frontmatter that was the filename keeps up with it",
+              "title: Renamed" in moved, moved[:60])
+
+        # --- the history survives the rename ------------------------------
+        h = json.loads(call(op, base + "/api/history?path=Notes/Renamed.md")[1])
+        check("history follows the note through the rename",
+              any(v["subject"].startswith("Update Alpha") for v in h["versions"]),
+              [v["subject"] for v in h["versions"]][:5])
+
+        # --- what a rename refuses ----------------------------------------
+        s_, _ = call(op, base + "/api/rename",
+                     data=json.dumps({"path": "Notes/Renamed.md",
+                                      "to": "README.md"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("renaming onto a note that exists is refused", s_ == 409, s_)
+        s_, _ = call(op, base + "/api/rename",
+                     data=json.dumps({"path": "Notes/Renamed.md",
+                                      "to": "../escape.md"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("a destination outside the vault is refused", s_ == 400, s_)
+        check("and nothing escaped",
+              not os.path.exists(os.path.join(os.path.dirname(vault), "escape.md")))
+        s_, _ = call(op, base + "/api/rename",
+                     data=json.dumps({"path": "Notes/Renamed.md",
+                                      "to": "Notes/Renamed.txt"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("so is a destination that is not a note", s_ == 400, s_)
+        check("the tree is clean through all of that",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+
+        # --- moving into a folder that does not exist yet ------------------
+        s_, b = call(op, base + "/api/rename",
+                     data=json.dumps({"path": "Notes/Renamed.md",
+                                      "to": "Archive/2026/Renamed.md"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("a note can move into a folder that did not exist", s_ == 200, s_)
+        check("and it is committed there",
+              "Archive/2026/Renamed.md" in git(vault, "show", "--name-only",
+                                               "--format=", "HEAD"))
+
+        # --- back where it started, which is a rename like any other -------
+        # It also leaves the vault as the tests after this one expect it.
+        s_, _ = call(op, base + "/api/rename",
+                     data=json.dumps({"path": "Archive/2026/Renamed.md",
+                                      "to": "Notes/Alpha.md"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("and can be moved back", s_ == 200, s_)
+        check("the folder it was the last note in is gone",
+              not os.path.exists(os.path.join(vault, "Archive", "2026")))
+        h = json.loads(call(op, base + "/api/history?path=Notes/Alpha.md")[1])
+        subjects = [v["subject"] for v in h["versions"]]
+        check("with the versions it had before it was ever renamed",
+              "Update Alpha" in subjects and
+              sum(s_.startswith("Rename") for s_ in subjects) >= 2, subjects[:6])
+        check("and no version listed twice",
+              len(h["versions"]) == len({v["sha"] for v in h["versions"]}), subjects)
+        check("and none belonging to a different note",
+              not any(s_.endswith(("Fresh", "Agent")) for s_ in subjects), subjects)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # --- a rename the hook refuses leaves nothing behind -------------------
+    hook = os.path.join(vault, ".git", "hooks", "pre-commit")
+    with open(hook, "w") as f:
+        f.write("#!/bin/sh\nexit 1\n")
+    os.chmod(hook, 0o755)
+    p, token, _ = start(vault, port)
+    try:
+        op, _ = client()
+        base = "http://127.0.0.1:%d" % port
+        form(op, base, token)
+        head = git(vault, "rev-parse", "HEAD")
+        links = open(os.path.join(vault, "README.md"), encoding="utf-8").read()
+        s_, _ = call(op, base + "/api/rename",
+                     data=json.dumps({"path": "Notes/Alpha.md",
+                                      "to": "Notes/Nope.md"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("a refused rename answers 422", s_ == 422, s_)
+        check("the note still has the name it had",
+              os.path.isfile(os.path.join(vault, "Notes", "Alpha.md"))
+              and not os.path.exists(os.path.join(vault, "Notes", "Nope.md")))
+        check("the links are back the way they were",
+              open(os.path.join(vault, "README.md"), encoding="utf-8").read() == links)
+        check("no commit was made", git(vault, "rev-parse", "HEAD") == head)
+        check("and nothing is left staged or dirty",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        os.remove(hook)
 
 
 def test_backup(vault, port):
@@ -1363,9 +1699,17 @@ def test_status_in_repo(vault, port):
         check("the edits made outside cairn were adopted",
               g["changed"] == 0 and g["untracked"] == 0, (g["changed"], g["untracked"]))
         check("so the tree is clean", g["clean"] is True)
-        check("the adopting commit is the one reported",
-              g["last"]["subject"] == "Adopt changes made outside cairn",
-              g.get("last"))
+        # Per note, not one lump: each adopted note gets the commit it
+        # would have got had it been saved in the browser, so its history
+        # panel has a version in it that says what happened and who did it.
+        subjects = git(repo, "log", "-2", "--format=%s").splitlines()
+        check("each note edited outside cairn is adopted on its own",
+              sorted(subjects) == ["Add Fresh", "Update Note"], subjects)
+        check("and the adopting commit names who wrote it",
+              "Client: outside cairn" in git(repo, "log", "-1", "--format=%b"),
+              git(repo, "log", "-1", "--format=%b"))
+        check("with the note's path in the body",
+              "Fresh.md" in git(repo, "log", "-1", "--format=%b"))
         check("there is no upstream to be ahead of", g["upstream"] is None)
 
         v = st["vault"]
@@ -1621,6 +1965,9 @@ def main():
         test_terminal(vault, 8936)
         test_git(vault, 8951)
         test_clients(vault, 8937)
+        test_outside(vault, 8942)
+        test_agent(vault, 8943)
+        test_rename(vault, 8944)
         test_backup(vault, 8940)
         test_status(vault, 8938)
         test_status_in_repo(vault, 8939)
