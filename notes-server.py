@@ -1042,8 +1042,15 @@ def show_at(sha, rel):
         return None
 
 
-def save_note(full, content, client=None, base=None):
+def save_note(full, content, client=None, base=None, auto=False):
     """Save one note onto trunk, merging first if trunk has moved.
+
+    `auto` only picks the commit's verb. An autosave is an ordinary save in
+    every other respect — same merge, same hooks, same one commit — but a
+    history read with `git log --oneline` is worth being able to skim, and
+    "the editor saved this because I stopped typing" and "I pressed Save"
+    are different enough to be worth telling apart. It is a choice between
+    two literals here, never a string from the request: see commit_message.
 
     Returns a dict the route hands back more or less as it stands:
       {"ok": True,  "commit": …, "content": …, "merged": bool}
@@ -1081,7 +1088,8 @@ def save_note(full, content, client=None, base=None):
                         "segments": split_conflicts(text, nonce)}}
                 content, merged = text, True
                 log_run("merged %s with the version on trunk" % rel)
-        ok, detail, previous = write_note(full, content, "Update", client)
+        ok, detail, previous = write_note(full, content,
+                                          "Autosave" if auto else "Update", client)
         if not ok:
             return {"ok": False, "refused": detail,
                     "content": previous if previous is not None else "",
@@ -2609,7 +2617,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if abs(os.path.getmtime(full) - float(seen)) > 0.001:
                 return self.fail(409, "changed on disk since you opened it")
 
-        result = save_note(full, content, self.client(), base)
+        result = save_note(full, content, self.client(), base,
+                           auto=data.get("auto") is True)
         if result.get("conflict"):
             # 409 with both versions and the hunks that clash. Nothing was
             # written: the browser shows the two sides, the user picks one per

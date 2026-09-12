@@ -147,6 +147,19 @@ already on). The chip shows the branch, whether the tree is clean, how many
 commits there are, how many browsers are editing, and when the last one
 landed.
 
+**Autosave.** Off unless you ask for it, from the toggle in the footer, and
+remembered per browser. On, a note is saved once it has been quiet for five
+seconds — and never more often than every twenty, so a paragraph typed in
+fits and starts does not become a commit per line. It is the same save the
+button makes: the same merge, the same hooks, one commit. Because in cairn a
+save *is* a commit, this is a trade — you never lose an edit, and your `git
+log` is busier — which is why it is a switch rather than a default. The
+commits it writes say `Autosave` where yours say `Update`, so the history is
+still worth skimming. A save the vault refuses and a conflict you have to
+settle both stand it down until the next save that works, rather than
+retrying at you every few seconds; the toggle says "Autosave paused" while
+that lasts.
+
 The vault has to be the repository's root. If it sits *inside* someone else's
 repository, cairn says so and stops rather than moving branches that aren't
 its to move.

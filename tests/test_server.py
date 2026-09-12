@@ -748,6 +748,31 @@ def test_git(vault, port):
         check("re-saving identical bytes commits nothing",
               s_ == 200 and int(git(vault, "rev-list", "--count", "HEAD")) == n_before)
 
+        # --- an autosave is an ordinary save wearing its own verb ----
+        # The editor commits a note a few seconds after the typing stops, and
+        # a history worth skimming should say which commits it wrote. The
+        # verb is the only difference: same merge, same hooks, one commit.
+        note = json.loads(call(op, base + "/api/notes")[1])["notes"]
+        alpha = next(n for n in note if n["title"] == "Alpha")
+        a_before = int(git(vault, "rev-list", "--count", "HEAD"))
+        s_, b = put(op, base, alpha["path"], alpha["raw"] + "\ntwo\n",
+                    mtime=alpha["mtime"], auto=True)
+        check("an autosave is committed like any other save",
+              s_ == 200 and int(git(vault, "rev-list", "--count", "HEAD")) == a_before + 1,
+              s_)
+        check("and says it was one",
+              git(vault, "log", "-1", "--format=%s") == "Autosave Alpha",
+              git(vault, "log", "-1", "--format=%s"))
+        # The flag is a choice between two words here, never a string from the
+        # request: anything but true is an ordinary save.
+        note = json.loads(call(op, base + "/api/notes")[1])["notes"]
+        alpha = next(n for n in note if n["title"] == "Alpha")
+        s_, b = put(op, base, alpha["path"], alpha["raw"] + "\nthree\n",
+                    mtime=alpha["mtime"], auto="Autosave\n\nrm -rf")
+        check("a junk auto flag saves as an ordinary edit",
+              s_ == 200 and git(vault, "log", "-1", "--format=%s") == "Update Alpha",
+              git(vault, "log", "-1", "--format=%s"))
+
         # --- a new note is committed too -----------------------------
         s_, _ = call(op, base + "/api/new",
                      data=json.dumps({"path": "Notes/Fresh.md", "title": "Fresh"}).encode(),

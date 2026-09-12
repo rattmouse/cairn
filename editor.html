@@ -625,6 +625,10 @@ body[data-console="on"] #console{display:block}
        <div id="backupInfo"></div>
        <button class="btn" id="backupBtn">Back up</button>
      </div>
+     <button class="tog" id="autoBtn" type="button"
+       title="Save a note a few seconds after you stop typing. Every save is a
+commit, so this writes more history than pressing Save does."
+       aria-pressed="false">Autosave</button>
      <button class="tog" id="consoleBtn" type="button"
        title="What cairn has run (Ctrl/⌘-J)" aria-pressed="false">Activity</button>
    </div>
@@ -1633,6 +1637,10 @@ function setDirty(v){
   dirty = v;
   saveBtn.disabled = !v || saving;
   if (v) setStatus("unsaved changes", "dirty");
+  /* Every path that dirties the note goes through here — the textarea, a live
+     block, a task box, a settled conflict — so this is the one place autosave
+     needs to watch. */
+  if (v) armAuto(); else cancelAuto();
   drawList(qEl.value);
 }
 
@@ -2431,6 +2439,7 @@ function open_(path, how){
   const n = NOTES.find(x => x.path === path);
   if (!n) return false;
   showRefusal(null);                    /* it was about the note being left */
+  holdAuto(false);                      /* and so was the autosave back-off */
   current = n;
   edEl.value = n.raw;
   crumbEl.innerHTML = "";
@@ -2460,8 +2469,9 @@ function open_(path, how){
   return true;
 }
 
-async function save(){
+async function save(auto){
   if (!current || !dirty || saving) return;
+  cancelAuto();
   saving = true; saveBtn.disabled = true;
   setStatus("saving…", "");
   setOrb("saving");
@@ -2469,7 +2479,7 @@ async function save(){
     const r = await api("/api/note", {
       method: "PUT",
       body: JSON.stringify({path: current.path, content: edEl.value,
-                            base: HEAD, mtime: current.mtime})
+                            base: HEAD, mtime: current.mtime, auto: !!auto})
     });
     HEAD = r.head || HEAD;
     current.raw = r.content;
@@ -2485,11 +2495,14 @@ async function save(){
     saving = false;
     setDirty(false);
     showRefusal(null);
+    autoLast = Date.now();
+    holdAuto(false);
     /* The sha is the whole point of the commit being part of the save: it is
        what `git show` takes to bring this exact version back. */
-    setStatus((r.merged ? "saved · merged with the vault" : "saved")
+    setStatus((auto ? "autosaved" : "saved")
+            + (r.merged ? " · merged with the vault" : "")
             + (r.commit ? " · " + r.commit : ""), "saved");
-    preview();
+    keepCaret(preview);
     drawStats();
     mapS.paint();
     if (onHist()) loadHistory(true);
@@ -2508,6 +2521,7 @@ async function save(){
       if (typeof e.detail.content === "string") current.raw = e.detail.content;
       if (e.detail.mtime) current.mtime = e.detail.mtime;
       showRefusal(e.detail.refused || e.message);
+      holdAuto(true);
       return;
     }
     if (e.status === 409 && e.detail && e.detail.conflict){
@@ -2515,6 +2529,7 @@ async function save(){
          versions and the hunks that clash are in the payload, and this is
          where the user settles them. */
       setStatus("this note changed on another device — pick a side", "error");
+      holdAuto(true);
       openConflict(e.detail.conflict);
       return;
     }
@@ -2533,6 +2548,111 @@ function showRefusal(text){
   $("refusedWhy").textContent = text || "";
   el.hidden = !text;
 }
+
+/* ------------------------------- autosave -------------------------------
+   Save the open note a few seconds after the typing stops. Nothing here is a
+   second way to write a note: it calls the same save() a click on Save does,
+   with the same base, the same merge and the same refusals — the timer only
+   presses the button.
+
+   Off unless asked for, and remembered per browser, because in cairn a save
+   is a commit: turning this on trades a busier `git log` for never losing an
+   edit, and that is the owner's trade to make rather than a default.
+
+   Two numbers shape the history it writes. A note is saved once it has been
+   quiet for IDLE, so a sentence being typed is not committed mid-word; and
+   never more often than GAP, so punctuated typing — a pause every few
+   seconds — cannot turn one paragraph into a commit per line. Continuous
+   typing writes nothing at all until the first pause.                    */
+
+const AUTO_IDLE = 5000, AUTO_GAP = 20000;
+let AUTO = false, autoTimer = null, autoLast = 0, autoHeld = false;
+
+/* Saving re-renders the note, and in live mode a re-render rebuilds the very
+   block the caret sits in. That is a blink when a person pressed Save and
+   intolerable when a timer did, so the caret is put back where it was. */
+function keepCaret(fn){
+  const ta = liveEl.querySelector("textarea.raw");
+  const at = (ta && document.activeElement === ta) ? ta.selectionStart : null;
+  const to = ta ? ta.selectionEnd : null;
+  const was = BLOCK_AT;
+  fn();
+  if (at === null || BLOCK_AT !== was) return;
+  const back = liveEl.querySelector("textarea.raw");
+  if (!back) return;
+  back.focus();
+  try { back.setSelectionRange(at, to); } catch (e) {}
+}
+
+function cancelAuto(){
+  if (autoTimer) clearTimeout(autoTimer);
+  autoTimer = null;
+}
+
+/* A save the vault refused, or a conflict the user has to settle, is exactly
+   the wrong thing to retry every few seconds: the hook would say no again and
+   the banner would flicker. Autosave stands down until a save succeeds — by
+   hand, or after the conflict dialog — and the toggle says so rather than
+   going quiet for no visible reason. */
+function holdAuto(on){
+  if (autoHeld === on) return;
+  autoHeld = on;
+  if (on) cancelAuto();
+  paintAuto();
+  if (!on) armAuto();
+}
+
+function paintAuto(){
+  const b = $("autoBtn");
+  b.classList.toggle("on", AUTO && !autoHeld);
+  b.setAttribute("aria-pressed", AUTO ? "true" : "false");
+  b.textContent = AUTO && autoHeld ? "Autosave paused" : "Autosave";
+}
+
+/* A dialog open over the note means a decision is in progress — a conflict to
+   settle, a version to look at, a note being named. None of them is a moment
+   to commit the thing underneath. */
+function modalOpen(){
+  return ["cveil", "vveil", "veil"].some(id => $(id).classList.contains("open"));
+}
+
+function armAuto(){
+  cancelAuto();
+  if (!AUTO || autoHeld || !current || !dirty || saving) return;
+  const wait = Math.max(AUTO_IDLE, autoLast + AUTO_GAP - Date.now());
+  autoTimer = setTimeout(() => {
+    autoTimer = null;
+    if (!AUTO || autoHeld || !current || !dirty || saving) return;
+    if (modalOpen()) return armAuto();       /* look again once it is shut */
+    save(true);
+  }, wait);
+}
+
+function setAuto(on, remember){
+  AUTO = !!on;
+  if (!AUTO) cancelAuto();
+  autoHeld = autoHeld && AUTO;
+  paintAuto();
+  if (remember !== false)
+    try { localStorage.setItem("cairn-autosave", AUTO ? "on" : "off"); } catch (e) {}
+  armAuto();
+}
+
+$("autoBtn").addEventListener("click", () => {
+  /* Turning it on with something already unsaved should not sit on its hands
+     for five seconds -- but it also should not commit behind the click, so it
+     is the ordinary timer, just started now. */
+  if (autoHeld && AUTO) return holdAuto(false);
+  setAuto(!AUTO);
+});
+
+/* Switching tabs or apps is the other end of "stopped typing", and the page
+   is still alive here — unlike beforeunload, which can start a save but never
+   wait for its answer. That one keeps its warning instead. */
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && AUTO && !autoHeld && dirty && !saving && !modalOpen())
+    save(true);
+});
 
 /* ------------------------------- history -------------------------------
    Every save is a commit, and this is the panel that finally reads them. It
@@ -3442,7 +3562,9 @@ qEl.addEventListener("keydown", e => {
   }
 });
 $("qClear").addEventListener("click", () => { qEl.value = ""; drawList(""); qEl.focus(); });
-saveBtn.addEventListener("click", save);
+/* Wrapped, not passed: save() takes a flag now, and a click handler would
+   hand it the MouseEvent — every press of Save committing as an autosave. */
+saveBtn.addEventListener("click", () => save());
 backupBtn.addEventListener("click", doBackup);
 $("elseBtn").addEventListener("click", async () => {
   /* Anything unsaved stays in the textarea: reload() refetches the listing and
@@ -3519,13 +3641,15 @@ window.addEventListener("beforeunload", e => {
 
 (async function(){
   readPalette();
-  let saved = null, split = null, m = null;
+  let saved = null, split = null, m = null, auto = null;
   try {
+    auto = localStorage.getItem("cairn-autosave");
     saved = localStorage.getItem("cairn-theme");
     split = localStorage.getItem("cairn-split");
     m = localStorage.getItem("cairn-mode") || localStorage.getItem("notes-mode");
   } catch (e) {}
   applyTheme(saved || "auto");
+  setAuto(auto === "on", false);
   if (split) setSplit(parseFloat(split)); else setSplit(50);
   restorePanels();
   setMode(m && MODES.some(x => x[0] === m) ? m : "split", false);
