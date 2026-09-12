@@ -129,6 +129,16 @@ body[data-right="off"] #outline{display:none}
 .item .ct{font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
 .item.dir{font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--dim)}
 .item.dir:hover{color:var(--ink)}
+/* Collapse all / expand all. A thin strip above the tree, there only when
+   there is a folder to fold and no search running -- a search force-opens
+   every folder, so the buttons would do nothing you could see. */
+#treeBar{display:flex;gap:12px;align-items:center;padding:7px 14px 3px}
+#treeBar[hidden]{display:none}
+.lnk{background:none;border:0;padding:0;font-size:10px;font-weight:700;
+  letter-spacing:.09em;text-transform:uppercase;color:var(--faint);cursor:pointer;
+  transition:color .12s}
+.lnk:hover:not(:disabled){color:var(--accent)}
+.lnk:disabled{opacity:.42;cursor:default}
 .empty{padding:22px 16px;font-size:12.5px;color:var(--faint);text-align:center;line-height:1.7}
 
 /* The backup block sits in the footer, laid out along it rather than down the
@@ -542,8 +552,15 @@ body[data-console="on"] #console{display:block}
       </div>
       <div class="row">
         <button class="btn" id="newBtn" style="flex:1">New note</button>
+        <button class="btn" id="renameBtn" title="Rename or move this note" disabled>Rename</button>
         <button class="btn danger" id="trashBtn" title="Move to .trash/" disabled>Trash</button>
       </div>
+    </div>
+    <div id="treeBar" hidden>
+      <button class="lnk" id="collapseAll" type="button"
+        title="Shut every folder">Collapse all</button>
+      <button class="lnk" id="expandAll" type="button"
+        title="Open every folder">Expand all</button>
     </div>
     <div id="list"></div>
   </aside>
@@ -1714,6 +1731,42 @@ function drawBranch(node, depth, f, forceOpen){
   }
 }
 
+/* Every folder the tree can show, which is every folder some note's path
+   passes through. Collapse all shuts exactly these; a folder that no longer
+   holds a note is not one of them, so the memory does not accumulate names
+   for folders that are gone. */
+function allFolders(){
+  const out = new Set();
+  for (const n of NOTES){
+    const parts = n.path.split("/");
+    let here = "";
+    for (let k = 0; k < parts.length - 1; k++){
+      here = here ? here + "/" + parts[k] : parts[k];
+      out.add(here);
+    }
+  }
+  return out;
+}
+
+/* The strip earns its space only when there is something to fold. Searching
+   ignores SHUT entirely, so neither button would change what you see. */
+function syncTreeBar(searching){
+  const folders = allFolders();
+  const bar = $("treeBar");
+  bar.hidden = searching || !folders.size;
+  if (bar.hidden) return;
+  let shut = 0;
+  for (const d of folders) if (SHUT.has(d)) shut++;
+  $("collapseAll").disabled = shut === folders.size;
+  $("expandAll").disabled = shut === 0;
+}
+
+function foldAll(shut){
+  SHUT = shut ? allFolders() : new Set();
+  rememberShut();
+  drawList(qEl.value);
+}
+
 function drawList(filter){
   const f = (filter || "").trim().toLowerCase();
   $("qField").classList.toggle("has-q", !!f);
@@ -1724,6 +1777,7 @@ function drawList(filter){
   drawBranch(treeOf(shown), 0, f, !!f);
   $("tally").textContent = f ? shown.length + " of " + NOTES.length + " match"
                              : NOTES.length + (NOTES.length === 1 ? " note" : " notes");
+  syncTreeBar(!!f);
   if (f && !shown.length){
     const e = document.createElement("div");
     e.className = "empty";
@@ -2400,6 +2454,7 @@ function open_(path, how){
   if (onHist()){ HIST_FOR = null; loadHistory(); }
   setAddress(n, how);
   $("trashBtn").disabled = false;
+  $("renameBtn").disabled = false;
   reveal(n.path);
   drawList(qEl.value);
   return true;
@@ -2728,25 +2783,83 @@ $("cSave").addEventListener("click", async () => {
 });
 
 /* ---------------------------- dialog ---------------------------- */
+/* One dialog, two jobs: a new note and a rename ask for exactly the same two
+   things, a folder and a name. MODE says which, and nothing else differs. */
 const folderSel = makeSelect($("dlgFolder"), "Folder");
-function openDialog(){
+let DLG_MODE = "new";
+
+function openDialog(mode){
+  DLG_MODE = mode === "rename" ? "rename" : "new";
+  if (DLG_MODE === "rename" && !current) return;
   const folders = [...new Set(NOTES.map(n => n.folder))].sort();
   folderSel.set(folders.map(f => [f, f === "(root)" ? "Vault root" : f]),
                 current ? current.folder : null);
-  $("dlgName").value = "";
+  const renaming = DLG_MODE === "rename";
+  $("dlgTitle").textContent = renaming ? "Rename note" : "New note";
+  $("dlgHint").textContent = renaming
+    ? "Moves the file and repoints every [[wikilink]] that names it — one commit for all of it."
+    : "Creates a markdown file with frontmatter already filled in.";
+  $("dlgOk").textContent = renaming ? "Rename" : "Create";
+  $("dlgName").value = renaming
+    ? current.path.split("/").pop().replace(/\.md$/, "") : "";
   $("dlgErr").textContent = "";
   $("veil").classList.add("open");
   $("dlgName").focus();
+  $("dlgName").select();
+}
+
+/* The path the dialog is describing, or null with the reason shown. */
+function dialogPath(){
+  const name = $("dlgName").value.trim();
+  if (!name){ $("dlgErr").textContent = "Give it a title."; return null; }
+  if (/[\/\\:*?"<>|]/.test(name)){
+    $("dlgErr").textContent = 'Avoid / \\ : * ? " < > | in the title.';
+    return null;
+  }
+  const folder = folderSel.value;
+  return (folder === "(root)" ? "" : folder + "/") + name + ".md";
+}
+
+function submitDialog(){
+  return DLG_MODE === "rename" ? renameNote() : createNote();
+}
+
+async function renameNote(){
+  const path = dialogPath();
+  if (!path || !current) return;
+  if (path === current.path){ closeDialog(); return; }
+  /* The note is reopened from disk afterwards, so anything in the textarea
+     that was never saved would go with the old name. */
+  if (dirty && !confirm("Renaming reopens the note from disk.\n\n"
+                      + "You have unsaved changes. Discard them?")) return;
+  const was = current.path;
+  try{
+    const r = await api("/api/rename", {method: "POST",
+      body: JSON.stringify({path: was, to: path})});
+    HEAD = r.head || HEAD;
+    closeDialog();
+    current = null; dirty = false;      /* the note it points at is gone */
+    await reload();
+    open_(r.path, "replace");
+    HIST_FOR = null;
+    if (onHist()) loadHistory(true);
+    setStatus(r.relinked.length
+      ? "renamed · " + r.relinked.length + " note" + (r.relinked.length === 1 ? "" : "s")
+        + " relinked"
+      : "renamed · committed", "saved");
+  } catch (e){
+    $("dlgErr").textContent = e.detail && e.detail.refused
+      ? e.message + " — " + e.detail.refused.split("\n")[0]
+      : e.message;
+  }
 }
 function closeDialog(){ folderSel.close(); $("veil").classList.remove("open"); }
 const dlgOpen = () => $("veil").classList.contains("open");
 
 async function createNote(){
+  const path = dialogPath();
+  if (!path) return;
   const title = $("dlgName").value.trim();
-  if (!title){ $("dlgErr").textContent = "Give it a title."; return; }
-  if (/[\/\\:*?"<>|]/.test(title)){ $("dlgErr").textContent = "Avoid / \\ : * ? \" < > | in the title."; return; }
-  const folder = folderSel.value;
-  const path = (folder === "(root)" ? "" : folder + "/") + title + ".md";
   try{
     const r = await api("/api/new", {method: "POST", body: JSON.stringify({path, title})});
     await reload();
@@ -2775,6 +2888,7 @@ async function trashNote(){
                             : "moved to trash · committed",
               r.uncommitted ? "error" : "saved");
     $("trashBtn").disabled = true;
+    $("renameBtn").disabled = true;
     mapS.paint();
     document.title = "cairn";
     history.replaceState({}, "", "/");
@@ -3241,6 +3355,9 @@ function plainClick(e){
   return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
 }
 
+$("collapseAll").addEventListener("click", () => foldAll(true));
+$("expandAll").addEventListener("click", () => foldAll(false));
+
 listEl.addEventListener("click", e => {
   const f = e.target.closest("[data-fold]");
   if (f){
@@ -3345,11 +3462,12 @@ setInterval(drawFoot, 30 * 1000);
    history, and cheap enough not to matter: the server answers it out of a
    few cached git calls. */
 setInterval(refreshStatus, 20 * 1000);
-$("newBtn").addEventListener("click", openDialog);
+$("newBtn").addEventListener("click", () => openDialog("new"));
+$("renameBtn").addEventListener("click", () => openDialog("rename"));
 $("trashBtn").addEventListener("click", trashNote);
 $("dlgCancel").addEventListener("click", closeDialog);
-$("dlgOk").addEventListener("click", createNote);
-$("dlgName").addEventListener("keydown", e => { if (e.key === "Enter") createNote(); });
+$("dlgOk").addEventListener("click", submitDialog);
+$("dlgName").addEventListener("keydown", e => { if (e.key === "Enter") submitDialog(); });
 $("veil").addEventListener("click", e => { if (e.target === $("veil")) closeDialog(); });
 $("vveil").addEventListener("click", e => { if (e.target === $("vveil")) closeVersion(); });
 
@@ -3358,7 +3476,7 @@ document.addEventListener("keydown", e => {
      just hit the same conflict again. */
   if ($("cveil").classList.contains("open")) return;
   if ((e.ctrlKey || e.metaKey) && e.key === "s"){ e.preventDefault(); save(); }
-  if ((e.ctrlKey || e.metaKey) && e.key === "n"){ e.preventDefault(); openDialog(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === "n"){ e.preventDefault(); openDialog("new"); }
   if ((e.ctrlKey || e.metaKey) && e.key === "\\"){
     e.preventDefault();
     const i = MODES.findIndex(m => m[0] === mode);

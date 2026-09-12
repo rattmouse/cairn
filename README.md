@@ -196,7 +196,63 @@ and **Restore into the editor** puts its text back in the textarea — not
 saved, not committed, just there, so restoring is an edit you look at before
 you keep it.
 
+A note that has been renamed keeps the versions it had under its old name.
+That is not `git log --follow`, which guesses from content similarity and will
+happily graft one note's history onto another that was made from the same
+frontmatter scaffold: cairn wrote the old path into the body of the rename
+commit, so the chain is a fact in the history rather than a guess about it.
+
 Entirely `git log` and `git show` on the server. Nothing in this panel writes.
+
+## Renaming and moving
+
+**Rename**, beside New note, asks for a folder and a title — the same two
+things New note asks for — and does three things in one commit: moves the
+file, repoints every `[[wikilink]]` and `![[embed]]` that named it, and, if
+the note's frontmatter title was its filename, keeps the two in step. A link
+that spelled out the folder keeps the folder; one that used the bare name
+keeps the bare name.
+
+The whole of it is one commit or none. If the vault's pre-commit hook refuses
+it, the note is back under its old name and every rewritten link is back to
+the bytes it had.
+
+## Notes written from somewhere else
+
+The vault is a folder of files, so not every edit arrives through the browser.
+A script, another editor, or an agent with a file tool can write a note
+directly, and cairn treats what it finds as a first-class edit rather than as
+mess to tidy: each note is committed on its own, with its own title as the
+subject and `Client: outside cairn` in the trailer, so it turns up in the
+History panel like anything else. That happens at startup, before a backup,
+and — the one that matters while you are working — whenever a browser reads
+the vault or saves a note.
+
+It is not only bookkeeping. Until an outside edit is committed, the vault has
+not moved as far as git is concerned, so a browser holding an older copy would
+save straight over it with nothing to recover. Committing it first is what
+turns that case into the ordinary three-way merge above.
+
+A program that would rather go through cairn than around it can:
+
+```bash
+TOKEN=$(cat ~/.local/state/cairn/vaults/<vault>/token)
+
+curl -s http://127.0.0.1:8765/api/notes \
+     -H "Authorization: Bearer $TOKEN"
+
+curl -s http://127.0.0.1:8765/api/note -X PUT \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "X-Cairn-Client: my script" \
+     -H "Content-Type: application/json" \
+     -d '{"path": "Notes/Thing.md", "content": "# Thing\n", "base": "<head>"}'
+```
+
+The bearer header is the same token by another name — there is no second way
+in, and the cross-origin refusal still runs first. `X-Cairn-Client` is the
+client's own name for itself: it is shown in the footer and written into the
+commit trailer, gets a branch like any other session so *changed on another
+device* is true of it too, and is never run and never used as a path.
 
 ## Backups
 
@@ -355,6 +411,16 @@ the same thing. Not a release process — a number that moves when the editor
 does, so a screenshot, a bug report and a running server can be talked about
 as the same thing.
 
+- **0.5** — an edit does not have to arrive through the browser. A note
+  written straight onto disk is committed on its own, with its own title and
+  a trailer saying where it came from, as soon as cairn next reads or writes
+  the vault — which also means a browser save merges with it instead of
+  writing over it. A client that is not a browser can send the token as
+  `Authorization: Bearer` and name itself in `X-Cairn-Client`, and gets a
+  branch and a line in the history like any other session. Notes can be
+  renamed and moved: the file, the `[[wikilinks]]` that name it and its
+  frontmatter title, in one commit, and the History panel follows a note
+  back through the renames.
 - **0.4** — sync and backup pulled apart. A branch per browser, a three-way
   merge behind every save, conflicts settled hunk by hunk in the page, a
   History panel, and backups as a zip and a git bundle written somewhere
@@ -389,10 +455,13 @@ python3 tests/test_server.py
 ```
 
 Checks over auth, reading, writing, path safety, TLS, opening a terminal, the
-git repository, merging, backups, and the footer's own endpoints — including a
-hook that refuses a save, two browsers editing one note into a merge and then
-into a conflict, a backup bundle restored with a plain `git clone`, and a
-throwaway vault inside a folder named the way Proton Drive names its own.
+git repository, merging, renaming, edits made outside cairn, backups, and the
+footer's own endpoints — including a hook that refuses a save, two browsers
+editing one note into a merge and then into a conflict, a note written on disk
+being adopted and then merged with rather than overwritten, a rename the hook
+refuses leaving neither the move nor the rewritten links behind, a backup
+bundle restored with a plain `git clone`, and a throwaway vault inside a
+folder named the way Proton Drive names its own.
 Standard library only. It builds a throwaway vault in `/tmp` and never touches
 a real one. No terminal window is opened during the tests: a shim records what
 the server tried to launch, and the shell part is driven under a pty, which is
