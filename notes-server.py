@@ -750,6 +750,33 @@ def clients_info(me=None):
         if info["behind"]:
             names = _git("diff", "--name-only", base + "..HEAD") or ""
             info["changed"] = [n for n in names.splitlines() if n.endswith(".md")][:50]
+    # A note written straight onto disk -- by another editor, a script, a git
+    # checkout -- is adopted by the next read of the vault, but until one
+    # happens it has moved no branch and the count above cannot see it. The
+    # browser would find out at save time, against a note it read an hour
+    # ago. Name it here instead, where a poll will see it first.
+    # This only looks. Adopting is a commit, and a status poll is no place to
+    # make one -- it does not hold GIT_LOCK and it answers every twenty
+    # seconds.
+    porcelain = _git("status", "--porcelain") or ""
+    disk = []
+    for line in porcelain.splitlines():
+        rel = line[3:]
+        if " -> " in rel:                       # a rename: the new name is the note
+            rel = rel.split(" -> ")[-1]
+        rel = rel.strip().strip('"')
+        if not rel.endswith(".md"):
+            continue
+        # The mtime rides along so the browser can tell a note that moved
+        # since it read the vault from one it is already holding the newest
+        # copy of. Mostly that is the gap between a write and the read that
+        # adopts it, but a note a hook refuses stays dirty indefinitely, and
+        # without the mtime it would report itself on every poll.
+        full = os.path.join(VAULT, rel)
+        disk.append({"path": rel,
+                     "mtime": os.path.getmtime(full) if os.path.isfile(full) else None})
+    if disk:
+        info["disk"] = disk[:50]
     return info
 
 
@@ -1042,8 +1069,15 @@ def show_at(sha, rel):
         return None
 
 
-def save_note(full, content, client=None, base=None):
+def save_note(full, content, client=None, base=None, auto=False):
     """Save one note onto trunk, merging first if trunk has moved.
+
+    `auto` only picks the commit's verb. An autosave is an ordinary save in
+    every other respect — same merge, same hooks, same one commit — but a
+    history read with `git log --oneline` is worth being able to skim, and
+    "the editor saved this because I stopped typing" and "I pressed Save"
+    are different enough to be worth telling apart. It is a choice between
+    two literals here, never a string from the request: see commit_message.
 
     Returns a dict the route hands back more or less as it stands:
       {"ok": True,  "commit": …, "content": …, "merged": bool}
@@ -1081,7 +1115,8 @@ def save_note(full, content, client=None, base=None):
                         "segments": split_conflicts(text, nonce)}}
                 content, merged = text, True
                 log_run("merged %s with the version on trunk" % rel)
-        ok, detail, previous = write_note(full, content, "Update", client)
+        ok, detail, previous = write_note(full, content,
+                                          "Autosave" if auto else "Update", client)
         if not ok:
             return {"ok": False, "refused": detail,
                     "content": previous if previous is not None else "",
@@ -2609,7 +2644,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if abs(os.path.getmtime(full) - float(seen)) > 0.001:
                 return self.fail(409, "changed on disk since you opened it")
 
-        result = save_note(full, content, self.client(), base)
+        result = save_note(full, content, self.client(), base,
+                           auto=data.get("auto") is True)
         if result.get("conflict"):
             # 409 with both versions and the hunks that clash. Nothing was
             # written: the browser shows the two sides, the user picks one per

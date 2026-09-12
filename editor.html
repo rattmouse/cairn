@@ -275,6 +275,8 @@ body.resizing{cursor:col-resize;user-select:none}
 .md p{margin:0 0 13px}
 .md ul,.md ol{margin:0 0 13px;padding-left:24px}
 .md li{margin:3px 0}
+/* A nested list is part of the item above it, not a block after it. */
+.md li>ul,.md li>ol{margin:3px 0 0}
 .md li::marker{color:var(--faint)}
 .md li.task{list-style:none;margin-left:-21px}
 .md li.task canvas{width:15px;height:15px;display:inline-block;vertical-align:-3px;
@@ -482,7 +484,11 @@ body[data-console="on"] #console{display:block}
   font-size:12.5px;line-height:1.6;margin:0 0 16px}
 .raw.fm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
   line-height:1.6;margin:0 0 22px;padding:9px 13px}
-.raw.li{margin:3px 0 3px 24px;width:calc(100% - 24px)}
+/* Live mode cuts one block per list item, so a nested item is a one-item
+   list with no parent list to sit inside. --d is how deep it was. */
+.blk.li{margin-left:calc(24px * var(--d,0))}
+.raw.li{margin:3px 0 3px calc(24px + 24px * var(--d,0));
+        width:calc(100% - 24px - 24px * var(--d,0))}
 #live .hint{color:var(--faint)}
 
 /* Anywhere the outline can jump to. */
@@ -625,6 +631,10 @@ body[data-console="on"] #console{display:block}
        <div id="backupInfo"></div>
        <button class="btn" id="backupBtn">Back up</button>
      </div>
+     <button class="tog" id="autoBtn" type="button"
+       title="Save a note a few seconds after you stop typing. Every save is a
+commit, so this writes more history than pressing Save does."
+       aria-pressed="false">Autosave</button>
      <button class="tog" id="consoleBtn" type="button"
        title="What cairn has run (Ctrl/⌘-J)" aria-pressed="false">Activity</button>
    </div>
@@ -678,7 +688,6 @@ body[data-console="on"] #console{display:block}
 
 <script>
 "use strict";
-const TOKEN = "__NOTES_TOKEN__";
 const $ = id => document.getElementById(id);
 
 /* ========================= theme =========================
@@ -1410,7 +1419,7 @@ function inline(s, ctx){
     name = name.trim();
     const rel = ctx.images[name];
     return rel
-      ? '<img alt="' + esc(name) + '" src="/media/' + rel.split("/").map(encodeURIComponent).join("/") + "?token=" + encodeURIComponent(TOKEN) + '">'
+      ? '<img alt="' + esc(name) + '" src="/media/' + rel.split("/").map(encodeURIComponent).join("/") + '">'
       : '<em>[missing image: ' + esc(name) + "]</em>";
   });
   // wikilinks
@@ -1550,10 +1559,33 @@ function render(text, ctx, base){
     // lists
     if (/^\s*([-*+]|\d+\.)\s+/.test(line)){
       flush();
-      const ordered = /^\s*\d+\./.test(line);
-      let l = "<" + (ordered ? "ol" : "ul") + ">";
+      /* A list is a run of items at whatever indents the writer used, so the
+         open lists are a stack: an item indented further opens a new list
+         inside the <li> that is still open, and one indented less closes back
+         down to the level it belongs to. That is why each <li> is left
+         unclosed until the next item says whether a child list goes in it.
+         The indents are compared with each other rather than measured against
+         two or four spaces, so both conventions nest the same. */
+      const stack = [];
+      let l = "";
+      const shut = () => { l += "</li></" + stack.pop().tag + ">"; };
       while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])){
-        let item = lines[i++].replace(/^\s*([-*+]|\d+\.)\s+/, "");
+        const m = lines[i].match(/^(\s*)([-*+]|\d+\.)\s+/);
+        const indent = m[1].replace(/\t/g, "    ").length;
+        const tag = /\d/.test(m[2]) ? "ol" : "ul";
+        const item = lines[i++].slice(m[0].length);
+        while (stack.length && indent < stack[stack.length - 1].indent) shut();
+        const top = stack[stack.length - 1];
+        if (top && indent === top.indent && top.tag === tag){
+          l += "</li>";
+        } else {
+          /* Bullets turning into numbers at the same indent are a new list,
+             not a new level -- close the old one and open the other beside
+             it, or they share one set of markers. */
+          if (top && indent === top.indent) shut();
+          l += "<" + tag + ">";
+          stack.push({indent: indent, tag: tag});
+        }
         const task = item.match(/^\[([ xX])\]\s+(.*)$/);
         if (task){
           const done = task[1].toLowerCase() === "x";
@@ -1562,16 +1594,17 @@ function render(text, ctx, base){
           l += '<li class="task' + (done ? " done" : "") + '">'
              + '<canvas data-task="' + (ctx.tasks++) + '" data-on="' + (done ? 1 : 0) + '"'
              + ' aria-label="' + esc(task[2].replace(/[*`~\[\]]/g, "").slice(0, 60)) + '"></canvas>'
-             + "<span>" + inline(task[2], ctx) + "</span></li>";
+             + "<span>" + inline(task[2], ctx) + "</span>";
         } else {
-          l += "<li>" + inline(item, ctx) + "</li>";
+          l += "<li>" + inline(item, ctx);
         }
         // indented continuation
         while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*([-*+]|\d+\.)\s+/.test(lines[i])){
-          l = l.replace(/<\/li>$/, "<br>" + inline(lines[i++].trim(), ctx) + "</li>");
+          l += "<br>" + inline(lines[i++].trim(), ctx);
         }
       }
-      out += l + "</" + (ordered ? "ol" : "ul") + ">";
+      while (stack.length) shut();
+      out += l;
       continue;
     }
 
@@ -1594,9 +1627,16 @@ let current = null, dirty = false, saving = false;
 const listEl = $("list"), viewEl = $("view");
 const statusEl = $("status"), crumbEl = $("crumb"), saveBtn = $("saveBtn"), qEl = $("q");
 
+/* The session cookie is the only credential this page has, and that is on
+   purpose: it is HttpOnly and SameSite=Strict, so the browser attaches it to
+   these requests and to the <img> requests /media/ answers without the token
+   ever being in the page source or in a URL. There used to be an
+   X-Notes-Token header and a ?token= on every image here, both carrying a
+   placeholder the server never substituted. Don't put the real token in the
+   page to make them work -- that is the thing the cookie exists to avoid. */
 function api(path, opts){
   opts = opts || {};
-  opts.headers = Object.assign({"X-Notes-Token": TOKEN}, opts.headers || {});
+  opts.headers = Object.assign({}, opts.headers || {});
   if (opts.body) opts.headers["Content-Type"] = "application/json";
   return fetch(path, opts).then(async r => {
     const j = await r.json().catch(() => ({ok:false, error:"bad response from server"}));
@@ -1633,6 +1673,10 @@ function setDirty(v){
   dirty = v;
   saveBtn.disabled = !v || saving;
   if (v) setStatus("unsaved changes", "dirty");
+  /* Every path that dirties the note goes through here — the textarea, a live
+     block, a task box, a settled conflict — so this is the one place autosave
+     needs to watch. */
+  if (v) armAuto(); else cancelAuto();
   drawList(qEl.value);
 }
 
@@ -2087,9 +2131,14 @@ function blocksOf(text){
     if (k < lines.length){ out.push({a: 0, b: k + 1, kind: "fm"}); i = k + 1; }
   }
 
+  const depths = [];             /* the open list indents, for nesting */
   while (i < lines.length){
     const line = lines[i];
     if (!line.trim()){ i++; continue; }      /* blank lines belong to no block */
+    /* Anything that is not a list item ends the run, and with it the nesting
+       the next run should start over from. A blank line does not: it is still
+       one list on the page, and the run below agrees. */
+    if (out.length && out[out.length - 1].kind !== "li") depths.length = 0;
     const a = i;
 
     if (/^```/.test(line)){
@@ -2117,10 +2166,17 @@ function blocksOf(text){
     }
     if (RULE_RE.test(line)){ out.push({a: a, b: a + 1, kind: "hr"}); i++; continue; }
     if (LIST_RE.test(line)){
-      const ordered = /^\s*\d+\./.test(line);
+      const m = line.match(/^(\s*)([-*+]|\d+\.)\s+/);
+      const indent = m[1].replace(/\t/g, "    ").length;
+      /* Depth the way render() finds it -- the open indents are a stack --
+         but carried across the run here, because each item is its own block
+         and a nested one rendered alone has nothing left to indent it. */
+      while (depths.length && indent < depths[depths.length - 1]) depths.pop();
+      if (!depths.length || indent > depths[depths.length - 1]) depths.push(indent);
       i++;
       while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !LIST_RE.test(lines[i])) i++;
-      out.push({a: a, b: i, kind: "li", ordered: ordered});
+      out.push({a: a, b: i, kind: "li", ordered: /\d/.test(m[2]),
+                depth: depths.length - 1});
       continue;
     }
     while (i < lines.length && lines[i].trim() && !/^```/.test(lines[i])
@@ -2150,19 +2206,31 @@ function drawLive(){
      themselves off it, and toggleTask counts them across the whole body. */
   const c1 = ctx();
   let ordinal = 0;
+  const counts = [];             /* the running number at each nesting depth */
 
   BLOCKS.forEach((blk, i) => {
     const text = lines.slice(blk.a, blk.b).join("\n");
     const runs = blk.kind === "li";
     const before = runs && i > 0 && BLOCKS[i - 1].kind === "li";
     const after  = runs && i + 1 < BLOCKS.length && BLOCKS[i + 1].kind === "li";
-    /* Numbering restarts where the numbers do. Bullets above an ordered list
-       are part of the same run for spacing and no part of it for counting. */
-    ordinal = blk.ordered ? (before && BLOCKS[i - 1].ordered ? ordinal + 1 : 1) : 0;
+    /* Numbering restarts where the numbers do, and it counts per depth:
+       coming back up from a nested list resumes the number it left off at,
+       and going down starts again at one. Bullets are part of the same run
+       for spacing and no part of it for counting. */
+    const depth = runs ? (blk.depth || 0) : 0;
+    if (runs){
+      if (!before) counts.length = 0;
+      counts.length = depth + 1;   /* going back up abandons the deeper counts */
+      counts[depth] = blk.ordered
+        ? (typeof counts[depth] === "number" ? counts[depth] + 1 : 1)
+        : undefined;
+      ordinal = blk.ordered ? counts[depth] : 0;
+    } else ordinal = 0;
 
     if (i === BLOCK_AT){
       const ta = document.createElement("textarea");
       ta.className = "raw" + (blk.kind === "p" ? "" : " " + blk.kind);
+      if (runs) ta.style.setProperty("--d", depth);
       ta.spellcheck = false;
       ta.value = text;
       liveEl.appendChild(ta);
@@ -2171,9 +2239,12 @@ function drawLive(){
     }
 
     const div = document.createElement("div");
-    div.className = "blk";
+    div.className = "blk" + (runs ? " li" : "");
     div.dataset.i = i;
-    if (runs) div.dataset.run = before && after ? "mid" : before ? "end" : after ? "start" : "solo";
+    if (runs){
+      div.dataset.run = before && after ? "mid" : before ? "end" : after ? "start" : "solo";
+      div.style.setProperty("--d", depth);
+    }
 
     if (!text.trim()){
       div.innerHTML = '<p class="hint">This note is empty — click here to start writing.</p>';
@@ -2431,6 +2502,7 @@ function open_(path, how){
   const n = NOTES.find(x => x.path === path);
   if (!n) return false;
   showRefusal(null);                    /* it was about the note being left */
+  holdAuto(false);                      /* and so was the autosave back-off */
   current = n;
   edEl.value = n.raw;
   crumbEl.innerHTML = "";
@@ -2460,8 +2532,9 @@ function open_(path, how){
   return true;
 }
 
-async function save(){
+async function save(auto){
   if (!current || !dirty || saving) return;
+  cancelAuto();
   saving = true; saveBtn.disabled = true;
   setStatus("saving…", "");
   setOrb("saving");
@@ -2469,7 +2542,7 @@ async function save(){
     const r = await api("/api/note", {
       method: "PUT",
       body: JSON.stringify({path: current.path, content: edEl.value,
-                            base: HEAD, mtime: current.mtime})
+                            base: HEAD, mtime: current.mtime, auto: !!auto})
     });
     HEAD = r.head || HEAD;
     current.raw = r.content;
@@ -2485,11 +2558,14 @@ async function save(){
     saving = false;
     setDirty(false);
     showRefusal(null);
+    autoLast = Date.now();
+    holdAuto(false);
     /* The sha is the whole point of the commit being part of the save: it is
        what `git show` takes to bring this exact version back. */
-    setStatus((r.merged ? "saved · merged with the vault" : "saved")
+    setStatus((auto ? "autosaved" : "saved")
+            + (r.merged ? " · merged with the vault" : "")
             + (r.commit ? " · " + r.commit : ""), "saved");
-    preview();
+    keepCaret(preview);
     drawStats();
     mapS.paint();
     if (onHist()) loadHistory(true);
@@ -2508,6 +2584,7 @@ async function save(){
       if (typeof e.detail.content === "string") current.raw = e.detail.content;
       if (e.detail.mtime) current.mtime = e.detail.mtime;
       showRefusal(e.detail.refused || e.message);
+      holdAuto(true);
       return;
     }
     if (e.status === 409 && e.detail && e.detail.conflict){
@@ -2515,6 +2592,7 @@ async function save(){
          versions and the hunks that clash are in the payload, and this is
          where the user settles them. */
       setStatus("this note changed on another device — pick a side", "error");
+      holdAuto(true);
       openConflict(e.detail.conflict);
       return;
     }
@@ -2533,6 +2611,116 @@ function showRefusal(text){
   $("refusedWhy").textContent = text || "";
   el.hidden = !text;
 }
+
+/* ------------------------------- autosave -------------------------------
+   Save the open note a few seconds after the typing stops. Nothing here is a
+   second way to write a note: it calls the same save() a click on Save does,
+   with the same base, the same merge and the same refusals — the timer only
+   presses the button.
+
+   Off unless asked for, and remembered per browser, because in cairn a save
+   is a commit: turning this on trades a busier `git log` for never losing an
+   edit, and that is the owner's trade to make rather than a default.
+
+   Two numbers shape the history it writes. A note is saved once it has been
+   quiet for IDLE, so a sentence being typed is not committed mid-word; and
+   never more often than GAP, so punctuated typing — a pause every few
+   seconds — cannot turn one paragraph into a commit per line. Continuous
+   typing writes nothing at all until the first pause.                    */
+
+const AUTO_IDLE = 5000, AUTO_GAP = 20000;
+let AUTO = false, autoTimer = null, autoLast = 0, autoHeld = false;
+
+/* Saving re-renders the note, and in live mode a re-render rebuilds the very
+   block the caret sits in. That is a blink when a person pressed Save and
+   intolerable when a timer did, so the caret is put back where it was. */
+function keepCaret(fn){
+  const ta = liveEl.querySelector("textarea.raw");
+  const at = (ta && document.activeElement === ta) ? ta.selectionStart : null;
+  const to = ta ? ta.selectionEnd : null;
+  const was = BLOCK_AT;
+  fn();
+  if (at === null || BLOCK_AT !== was) return;
+  const back = liveEl.querySelector("textarea.raw");
+  if (!back) return;
+  back.focus();
+  try { back.setSelectionRange(at, to); } catch (e) {}
+}
+
+function cancelAuto(){
+  if (autoTimer) clearTimeout(autoTimer);
+  autoTimer = null;
+}
+
+/* A save the vault refused, or a conflict the user has to settle, is exactly
+   the wrong thing to retry every few seconds: the hook would say no again and
+   the banner would flicker. Autosave stands down until a save succeeds — by
+   hand, or after the conflict dialog — and the toggle says so rather than
+   going quiet for no visible reason. */
+function holdAuto(on){
+  if (autoHeld === on) return;
+  autoHeld = on;
+  if (on) cancelAuto();
+  paintAuto();
+  if (!on) armAuto();
+}
+
+function paintAuto(){
+  const b = $("autoBtn");
+  b.classList.toggle("on", AUTO && !autoHeld);
+  b.setAttribute("aria-pressed", AUTO ? "true" : "false");
+  b.textContent = AUTO && autoHeld ? "Autosave paused" : "Autosave";
+}
+
+/* A dialog open over the note means a decision is in progress — a conflict to
+   settle, a version to look at, a note being named. None of them is a moment
+   to commit the thing underneath. */
+function modalOpen(){
+  return ["cveil", "vveil", "veil"].some(id => $(id).classList.contains("open"));
+}
+
+function armAuto(){
+  cancelAuto();
+  if (!AUTO || autoHeld || !current || !dirty || saving) return;
+  const wait = Math.max(AUTO_IDLE, autoLast + AUTO_GAP - Date.now());
+  autoTimer = setTimeout(() => {
+    autoTimer = null;
+    if (!AUTO || autoHeld || !current || !dirty || saving) return;
+    if (modalOpen()) return armAuto();       /* look again once it is shut */
+    save(true);
+  }, wait);
+}
+
+function setAuto(on, remember){
+  AUTO = !!on;
+  if (!AUTO) cancelAuto();
+  autoHeld = autoHeld && AUTO;
+  paintAuto();
+  if (remember !== false)
+    try { localStorage.setItem("cairn-autosave", AUTO ? "on" : "off"); } catch (e) {}
+  armAuto();
+}
+
+$("autoBtn").addEventListener("click", () => {
+  /* Turning it on with something already unsaved should not sit on its hands
+     for five seconds -- but it also should not commit behind the click, so it
+     is the ordinary timer, just started now. */
+  if (autoHeld && AUTO) return holdAuto(false);
+  setAuto(!AUTO);
+});
+
+/* Switching tabs or apps is the other end of "stopped typing", and the page
+   is still alive here — unlike beforeunload, which can start a save but never
+   wait for its answer. That one keeps its warning instead. */
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && AUTO && !autoHeld && dirty && !saving && !modalOpen())
+    save(true);
+  /* Coming back is the moment to find out the vault moved while you were in
+     the other program that moved it. Ask now rather than waiting out the
+     poll: it is one cheap call, and the answer is the whole point of the
+     line above the editor. */
+  if (!document.hidden) refreshStatus();
+});
 
 /* ------------------------------- history -------------------------------
    Every save is a commit, and this is the panel that finally reads them. It
@@ -3037,12 +3225,30 @@ function drawClients(){
      open rather than about the machine. Shown only when another browser has
      actually moved something. */
   const c = CLIENTS, el = $("elsewhere");
-  const behind = c && c.behind;
-  if (!behind){ el.hidden = true; return; }
-  const changed = c.changed || [];
+  const behind = (c && c.behind) || 0;
+  /* Two ways a note can have moved under this page: another browser committed
+     it, or something that is not cairn wrote it straight to disk and no read
+     has adopted it yet. The second is the one that used to be found out at
+     save time, so it belongs on the same line -- what the Reload button does
+     answers both, and adopts the second on its way past.
+
+     Only the ones this page is not already holding, though: an uncommitted
+     note it has read is not news. That is also what keeps a note a hook
+     refuses -- which stays dirty for as long as it offends the hook -- from
+     saying so on every poll for the rest of the session. */
+  const disk = ((c && c.disk) || []).filter(d => {
+    const n = NOTES.find(x => x.path === d.path);
+    return !n || d.mtime === null || Math.abs(n.mtime - d.mtime) > 0.001;
+  }).map(d => d.path);
+  const committed = (c && c.changed) || [];
+  if (!behind && !disk.length){ el.hidden = true; return; }
+  const changed = committed.concat(disk.filter(p => !committed.includes(p)));
+  const where = behind && disk.length ? "changed on another device and on disk"
+              : behind               ? "changed on another device"
+              :                        "changed on disk, outside cairn";
   const mine = current && changed.includes(current.path);
   $("elseWhat").innerHTML =
-    plural(changed.length || behind, "note") + " changed on another device"
+    plural(changed.length || behind, "note") + " " + where
     + (mine ? " — <b>including this one</b>" : "")
     + ' <span class="sep">·</span> ' + esc(changed.slice(0, 3).join(", "))
     + (changed.length > 3 ? " …" : "");
@@ -3442,7 +3648,9 @@ qEl.addEventListener("keydown", e => {
   }
 });
 $("qClear").addEventListener("click", () => { qEl.value = ""; drawList(""); qEl.focus(); });
-saveBtn.addEventListener("click", save);
+/* Wrapped, not passed: save() takes a flag now, and a click handler would
+   hand it the MouseEvent — every press of Save committing as an autosave. */
+saveBtn.addEventListener("click", () => save());
 backupBtn.addEventListener("click", doBackup);
 $("elseBtn").addEventListener("click", async () => {
   /* Anything unsaved stays in the textarea: reload() refetches the listing and
@@ -3519,13 +3727,15 @@ window.addEventListener("beforeunload", e => {
 
 (async function(){
   readPalette();
-  let saved = null, split = null, m = null;
+  let saved = null, split = null, m = null, auto = null;
   try {
+    auto = localStorage.getItem("cairn-autosave");
     saved = localStorage.getItem("cairn-theme");
     split = localStorage.getItem("cairn-split");
     m = localStorage.getItem("cairn-mode") || localStorage.getItem("notes-mode");
   } catch (e) {}
   applyTheme(saved || "auto");
+  setAuto(auto === "on", false);
   if (split) setSplit(parseFloat(split)); else setSplit(50);
   restorePanels();
   setMode(m && MODES.some(x => x[0] === m) ? m : "split", false);

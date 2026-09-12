@@ -147,6 +147,19 @@ already on). The chip shows the branch, whether the tree is clean, how many
 commits there are, how many browsers are editing, and when the last one
 landed.
 
+**Autosave.** Off unless you ask for it, from the toggle in the footer, and
+remembered per browser. On, a note is saved once it has been quiet for five
+seconds — and never more often than every twenty, so a paragraph typed in
+fits and starts does not become a commit per line. It is the same save the
+button makes: the same merge, the same hooks, one commit. Because in cairn a
+save *is* a commit, this is a trade — you never lose an edit, and your `git
+log` is busier — which is why it is a switch rather than a default. The
+commits it writes say `Autosave` where yours say `Update`, so the history is
+still worth skimming. A save the vault refuses and a conflict you have to
+settle both stand it down until the next save that works, rather than
+retrying at you every few seconds; the toggle says "Autosave paused" while
+that lasts.
+
 The vault has to be the repository's root. If it sits *inside* someone else's
 repository, cairn says so and stops rather than moving branches that aren't
 its to move.
@@ -171,6 +184,14 @@ session has seen. That is enough to do the two jobs it exists for.
 line above the editor: *2 notes changed on another device — including this
 one*, with the paths and a Reload. It is measured in commits, not guessed from
 a clock, and Reload keeps anything unsaved in your textarea.
+
+The same line covers a note written straight onto disk — by another editor, a
+script, a `git checkout` — which moves no commit and so cannot be counted that
+way: cairn compares what is uncommitted in the vault against the copy your
+browser is holding, and says *changed on disk, outside cairn*. It asks again
+the moment you come back to the tab, which is usually the moment after you
+made the change. Before, you found out at save time, having typed against a
+stale note for an hour.
 
 **Merging.** A save carries the commit its copy came from. If the vault has
 moved on, cairn three-way merges your edit against what is there now — the
@@ -443,8 +464,9 @@ rate limiting, no audit trail beyond the terminal. Don't port-forward it.
 The renderer in `editor.html` is deliberately small and covers what these
 notes use: headings, fenced code, inline code, bold/italic/strikethrough,
 links and bare URLs, `[[wikilinks]]` and `![[embeds]]`, bullet, numbered and
-task lists, tables, blockquotes, `> [!NOTE]` callouts, horizontal rules, and
-YAML frontmatter. Footnotes and nested blockquotes are not handled.
+task lists nested to any depth, tables, blockquotes, `> [!NOTE]` callouts,
+horizontal rules, and YAML frontmatter. Footnotes and nested blockquotes are
+not handled.
 
 `docs/demo-vault/2 - Resources/Markdown Reference.md` exercises most of it.
 

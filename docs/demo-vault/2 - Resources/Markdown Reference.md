@@ -16,10 +16,17 @@ https://example.org which become links on their own.
 - Bullets
 - With a second line that
   continues the item
+- Nesting, as deep as you like
+  - one level in
+    - two levels in
 1. Ordered
 2. Also ordered
+   1. And numbered again inside
+   2. Starting over at one
+3. Back to where it was
 - [ ] Unchecked task
 - [x] Checked task
+  - [ ] A subtask
 
 ## Quotes and callouts
 
