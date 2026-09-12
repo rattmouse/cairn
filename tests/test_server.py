@@ -1090,6 +1090,95 @@ def test_clients(vault, port):
         shutil.rmtree(state, ignore_errors=True)
 
 
+def test_graph(vault, port):
+    """/api/graph: the history the footer draws, with every client on it.
+
+    The panel's whole claim is that a lane is a branch and a branch is a
+    browser, so what is checked here is that claim: a commit carries the
+    client that wrote it and the notes it touched, and a client's bookmark is
+    reported against the commit its branch actually points at.
+    """
+    print("\nthe client graph")
+
+    if not shutil.which("git"):
+        check("git is installed to test against", False, "skipped")
+        return
+
+    state = tempfile.mkdtemp(prefix="cairn-test-state-")
+    env = dict(os.environ, XDG_STATE_HOME=state)
+    p, token, _ = start(vault, port, env=env)
+    try:
+        base = "http://127.0.0.1:%d" % port
+        alice, _ajar = client()
+        bob, _bjar = client()
+
+        code, _ = call(alice, base + "/api/graph")
+        check("/api/graph refused when locked", code == 403, code)
+
+        form(alice, base, token)
+        form(bob, base, token)
+        a = notes_of(alice, base)
+        notes_of(bob, base)
+        note = next(n for n in a["notes"] if n["title"] == "Alpha")
+        # Appended rather than replaced: this vault is shared with the tests
+        # before it, so an edit has to be one nothing has made already or the
+        # save is a no-op and there is no commit to draw.
+        code, _ = put(alice, base, note["path"],
+                      note["raw"] + "\nAlice drew this graph.\n",
+                      base=a["head"], stamp=False)
+        check("a save to graph lands", code == 200, code)
+
+        g = json.loads(call(alice, base + "/api/graph")[1])
+        check("the graph answers with the commits and the refs on them",
+              g["ok"] and g["commits"] and isinstance(g["refs"], dict), list(g))
+        top = g["commits"][0]
+        check("newest first, and it is where the notes are",
+              top["sha"] == g["head"], (top["sha"], g["head"]))
+        check("a commit names the client that wrote it",
+              top["client"] and top["client"] != "outside cairn", top["client"])
+        check("and the note it touched, so a row can be opened",
+              top["files"] == [note["path"]], top["files"])
+        check("every commit carries its parents, which is what a lane is",
+              all("parents" in cm for cm in g["commits"])
+              and g["commits"][-1]["parents"] == [], g["commits"][-1])
+
+        trunk = [r for r in g["refs"][g["head"]] if r["kind"] == "trunk"]
+        check("trunk is marked on the commit it is at",
+              [r["name"] for r in trunk] == ["main"], trunk)
+        mine = [r for rs in g["refs"].values() for r in rs
+                if r["kind"] == "client" and r["branch"] == g["you"]]
+        check("this client's own bookmark is named as its own",
+              len(mine) == 1 and mine[0]["active"] is True, mine)
+
+        g2 = json.loads(call(bob, base + "/api/graph")[1])
+        check("the graph is the same history whoever asks for it",
+              [cm["sha"] for cm in g2["commits"]]
+              == [cm["sha"] for cm in g["commits"]])
+        check("but each client is told which bookmark is its own",
+              g2["you"] != g["you"] and g2["you"], (g["you"], g2["you"]))
+
+        # Bob has not read the vault since Alice's save, so his bookmark is
+        # still on the older commit -- which is the whole point of drawing it.
+        # Asking for the graph does not move it: only reading the vault does.
+        behind = [sha for sha, rs in g["refs"].items()
+                  for r in rs if r.get("branch") == g2["you"]]
+        check("a client that has not caught up is drawn where it stopped",
+              behind and behind[0] != g["head"]
+              and behind[0] in [cm["sha"] for cm in g["commits"]],
+              behind)
+
+        # The only number the request carries, and it is clamped rather than
+        # trusted: a graph is a footer panel, not a way to ask for the lot.
+        few = json.loads(call(alice, base + "/api/graph?limit=1")[1])
+        check("a limit is honoured", len(few["commits"]) <= 5, len(few["commits"]))
+        junk = json.loads(call(alice, base + "/api/graph?limit=--all")[1])
+        check("and nonsense in it is just a default, not an argument to git",
+              junk["ok"] and junk["commits"], junk.get("error"))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        shutil.rmtree(state, ignore_errors=True)
+
+
 def test_outside(vault, port):
     """A note written straight onto disk, while cairn is running.
 
@@ -2006,6 +2095,7 @@ def main():
         test_terminal(vault, 8936)
         test_git(vault, 8951)
         test_clients(vault, 8937)
+        test_graph(vault, 8945)
         test_outside(vault, 8942)
         test_agent(vault, 8943)
         test_rename(vault, 8944)
