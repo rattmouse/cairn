@@ -20,7 +20,7 @@ jobs:
     name: tests in podman
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build the image
         run: podman build -t cairn-ci -f Containerfile .
@@ -35,7 +35,7 @@ jobs:
     name: tests on a stock runner
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Deliberately no setup-python and no pip. If this job ever needs one,
       # invariant 1 has been broken and that is the news.
