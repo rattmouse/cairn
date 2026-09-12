@@ -1,0 +1,49 @@
+# Every push and every pull request runs the server test suite twice: once in
+# a container that has nothing in it but python3, git, openssl and bash, and
+# once on a stock GitHub runner. The container is the honest run — it is what
+# catches a test that quietly leans on something a laptop happens to have.
+# The bare run is the claim in invariant 1, checked: clone it, run it, no
+# install step.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  podman:
+    name: tests in podman
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build the image
+        run: podman build -t cairn-ci -f Containerfile .
+
+      # No volumes, no ports published, nothing mounted: the tests build
+      # their own vault in the container's /tmp and reach their own servers
+      # over the container's own loopback. Nothing needs to reach in or out.
+      - name: Run the tests
+        run: podman run --rm cairn-ci
+
+  bare:
+    name: tests on a stock runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Deliberately no setup-python and no pip. If this job ever needs one,
+      # invariant 1 has been broken and that is the news.
+      - name: Show what we are working with
+        run: |
+          python3 --version
+          git --version
+          openssl version
+
+      - name: Run the tests
+        run: python3 tests/test_server.py
