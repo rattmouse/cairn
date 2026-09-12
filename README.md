@@ -456,8 +456,9 @@ rate limiting, no audit trail beyond the terminal. Don't port-forward it.
 The renderer in `editor.html` is deliberately small and covers what these
 notes use: headings, fenced code, inline code, bold/italic/strikethrough,
 links and bare URLs, `[[wikilinks]]` and `![[embeds]]`, bullet, numbered and
-task lists, tables, blockquotes, `> [!NOTE]` callouts, horizontal rules, and
-YAML frontmatter. Footnotes and nested blockquotes are not handled.
+task lists nested to any depth, tables, blockquotes, `> [!NOTE]` callouts,
+horizontal rules, and YAML frontmatter. Footnotes and nested blockquotes are
+not handled.
 
 `docs/demo-vault/2 - Resources/Markdown Reference.md` exercises most of it.
 
