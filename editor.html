@@ -688,7 +688,6 @@ commit, so this writes more history than pressing Save does."
 
 <script>
 "use strict";
-const TOKEN = "__NOTES_TOKEN__";
 const $ = id => document.getElementById(id);
 
 /* ========================= theme =========================
@@ -1420,7 +1419,7 @@ function inline(s, ctx){
     name = name.trim();
     const rel = ctx.images[name];
     return rel
-      ? '<img alt="' + esc(name) + '" src="/media/' + rel.split("/").map(encodeURIComponent).join("/") + "?token=" + encodeURIComponent(TOKEN) + '">'
+      ? '<img alt="' + esc(name) + '" src="/media/' + rel.split("/").map(encodeURIComponent).join("/") + '">'
       : '<em>[missing image: ' + esc(name) + "]</em>";
   });
   // wikilinks
@@ -1628,9 +1627,16 @@ let current = null, dirty = false, saving = false;
 const listEl = $("list"), viewEl = $("view");
 const statusEl = $("status"), crumbEl = $("crumb"), saveBtn = $("saveBtn"), qEl = $("q");
 
+/* The session cookie is the only credential this page has, and that is on
+   purpose: it is HttpOnly and SameSite=Strict, so the browser attaches it to
+   these requests and to the <img> requests /media/ answers without the token
+   ever being in the page source or in a URL. There used to be an
+   X-Notes-Token header and a ?token= on every image here, both carrying a
+   placeholder the server never substituted. Don't put the real token in the
+   page to make them work -- that is the thing the cookie exists to avoid. */
 function api(path, opts){
   opts = opts || {};
-  opts.headers = Object.assign({"X-Notes-Token": TOKEN}, opts.headers || {});
+  opts.headers = Object.assign({}, opts.headers || {});
   if (opts.body) opts.headers["Content-Type"] = "application/json";
   return fetch(path, opts).then(async r => {
     const j = await r.json().catch(() => ({ok:false, error:"bad response from server"}));
