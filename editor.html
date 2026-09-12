@@ -436,6 +436,51 @@ body[data-console="on"] #console{display:block}
 .ln.term .m{color:var(--note)}
 /* The git commands a run makes, so the panel reads as a transcript. */
 .ln.cmd .m{color:var(--dim)}
+/* --------------------------- the client graph ---------------------------
+   The history as a column of commits, with a lane drawn down it and every
+   client's branch marked on the row it points at -- a GitKraken listing cut
+   down to what this tool actually has: one working tree, one trunk, and a
+   bookmark per browser. Colour is the client that wrote the commit, and the
+   same colour names it in the legend. */
+#graph{display:none;height:min(270px,36vh);background:var(--bg);
+  border-bottom:1px solid var(--edge);font-size:11.5px}
+body[data-graph="on"] #graph{display:flex}
+#glegend{flex:0 0 232px;min-width:0;border-right:1px solid var(--edge);
+  overflow-y:auto;padding:8px 0;scrollbar-gutter:stable}
+#glegend .ghead{padding:2px 12px 8px;font-size:10px;font-weight:700;
+  letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
+.gcl{display:flex;align-items:center;gap:8px;width:100%;padding:5px 12px;
+  background:none;border:0;color:var(--dim);font:inherit;text-align:left;
+  cursor:pointer;border-left:2px solid transparent}
+.gcl:hover{background:var(--raise);color:var(--ink)}
+.gcl canvas{width:9px;height:9px;flex:0 0 9px;display:block}
+.gcl .who{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;color:var(--ink)}
+.gcl.idle .who{color:var(--dim)}
+.gcl .at{flex:0 0 auto;color:var(--faint);font-variant-numeric:tabular-nums}
+#glegend .none{padding:4px 12px;color:var(--faint)}
+#gscroll{flex:1;min-width:0;overflow:auto;scrollbar-gutter:stable}
+#grows{position:relative}
+#glanes{position:absolute;left:0;top:0;display:block}
+.grow{display:flex;align-items:center;gap:9px;height:26px;padding-right:14px;
+  padding-left:var(--gutter,44px);white-space:nowrap;cursor:default}
+.grow.pick{cursor:pointer}
+.grow.pick:hover{background:var(--raise)}
+/* The subject takes the slack, so what a commit was is the last thing to
+   give way and the columns after it stay lined up down the panel. */
+.grow .sub{flex:1 1 auto;min-width:4em;overflow:hidden;text-overflow:ellipsis;
+  color:var(--ink)}
+.grow.head .sub{font-weight:600}
+.grow .gsha{flex:0 0 auto;color:var(--faint);font-variant-numeric:tabular-nums;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px}
+.grow .by{flex:0 1 116px;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  text-align:right;color:var(--dim)}
+.grow .when{flex:0 0 auto;color:var(--faint)}
+.pill{flex:0 0 auto;padding:1px 7px;border-radius:999px;font-size:10px;
+  font-weight:600;border:1px solid currentColor;background:var(--panel)}
+.pill.trunk{color:var(--dim)}
+#graph .empty{padding:14px;color:var(--faint)}
+
 #footbar{display:flex;align-items:center;gap:14px;padding:5px 14px;min-height:34px;
   font-size:11.5px;color:var(--dim)}
 #ver{flex:0 0 auto;font-size:10px;letter-spacing:.09em;text-transform:uppercase;
@@ -515,6 +560,16 @@ body[data-console="on"] #console{display:block}
   #footbar{flex-wrap:wrap;gap:6px 12px;padding:6px 12px}
   #footgap{display:none}
   #console{height:min(200px,40vh)}
+  /* No room for a column of names beside the graph, and dropping them would
+     empty a panel called Clients. They lie along the top instead, as the
+     chips they already look like. */
+  #graph{flex-direction:column;height:min(250px,44vh)}
+  #glegend{flex:0 0 auto;display:flex;gap:5px;padding:6px 9px;overflow-x:auto;
+    overflow-y:hidden;border-right:0;border-bottom:1px solid var(--edge)}
+  #glegend .ghead{display:none}
+  .gcl{width:auto;padding:3px 9px;gap:6px;border:1px solid var(--edge);
+    border-left-width:1px;border-radius:999px}
+  .gcl .who{max-width:120px}
   /* The path is what gives first: the mode control, Save and the two panel
      toggles cannot shrink past their own words. */
   #crumbWrap{display:none}
@@ -620,6 +675,11 @@ body[data-console="on"] #console{display:block}
  </div>
 
  <footer id="foot">
+   <div id="graph">
+     <div id="glegend"></div>
+     <div id="gscroll"><div id="grows"><canvas id="glanes" aria-hidden="true"></canvas>
+       <div id="growlist"></div></div></div>
+   </div>
    <div id="console"><div class="idle">Nothing has run yet.</div></div>
    <div id="footbar">
      <span id="ver">cairn</span>
@@ -635,6 +695,9 @@ body[data-console="on"] #console{display:block}
        title="Save a note a few seconds after you stop typing. Every save is a
 commit, so this writes more history than pressing Save does."
        aria-pressed="false">Autosave</button>
+     <button class="tog" id="graphBtn" type="button"
+       title="Every browser and client editing this vault, and where each one
+sits in the history (Ctrl/⌘-G)" aria-pressed="false">Clients</button>
      <button class="tog" id="consoleBtn" type="button"
        title="What cairn has run (Ctrl/⌘-J)" aria-pressed="false">Activity</button>
    </div>
@@ -2788,8 +2851,11 @@ function drawHistory(){
   });
 }
 
-async function showVersion(v){
-  const path = HIST_FOR;
+async function showVersion(v, forPath){
+  /* The history panel asks about the note it is open on; the client graph
+     asks about a note named by the commit it drew, which may not be the one
+     in the editor at all. */
+  const path = forPath || HIST_FOR;
   try {
     const got = await api("/api/history/show?sha=" + encodeURIComponent(v.sha)
                         + "&path=" + encodeURIComponent(path));
@@ -2798,7 +2864,8 @@ async function showVersion(v){
     setStatus(e.message, "error");
     return;
   }
-  $("vTitle").textContent = (current && current.title) || path;
+  const note = NOTES.find(n => n.path === path);
+  $("vTitle").textContent = (note && note.title) || path;
   $("vHint").textContent = v.subject + " · " + v.short + " · " + rel(v.at)
                          + (v.client ? " · " + v.client : "");
   $("vTally").textContent = "Read-only. Restoring only fills the editor — you "
@@ -3314,7 +3381,275 @@ async function refreshStatus(){
   /* A backup the schedule started is nobody's click, so this is where the
      activity panel finds out there is something to follow. */
   if (BACKUP && BACKUP.running) scheduleLog(0);
+  /* The graph is the same question the chips answer, drawn out, so it rides
+     the same poll rather than starting one of its own. */
+  loadGraph();
 }
+
+/* --------------------------- the client graph ---------------------------
+   What every browser and client editing this vault has seen, drawn the way a
+   git client draws it: one row per commit, a lane down the side, a dot in the
+   colour of whoever wrote it, and each client's bookmark as a pill on the row
+   its branch points at.
+
+   The lanes are laid out here rather than on the server because they are
+   geometry. There is normally only one of them -- a save commits onto trunk,
+   so cairn's history is a straight line and the branches are marks along it
+   -- but the layout handles a fork rather than assuming one, because a vault
+   is a real repository and someone will eventually do something to it in a
+   terminal.                                                              */
+
+const GROWH = 26, GLANEW = 16, GX0 = 16;
+/* No red: in this footer red means something is wrong, and a client is not
+   a fault. */
+const CLIENT_COLORS = ["accent", "note", "ok", "todo", "warn"];
+let GRAPH = null, graphBusy = false, graphS = null, graphSig = "";
+
+function clientColor(name){
+  /* "outside cairn" -- a note written by something that is not a client at
+     all -- is deliberately colourless: it is the absence of a client, not
+     another one. */
+  if (!name || name === "outside cairn") return "faint";
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return CLIENT_COLORS[h % CLIENT_COLORS.length];
+}
+
+function ancestry(sha, parents){
+  /* Everything reachable from one commit, within the page of history the
+     panel was given. */
+  const seen = new Set(), queue = [sha];
+  while (queue.length){
+    const at = queue.pop();
+    if (!at || seen.has(at)) continue;
+    seen.add(at);
+    for (const p of parents.get(at) || []) queue.push(p);
+  }
+  return seen;
+}
+
+function distance(head, tip){
+  /* How far a client's bookmark is from the notes on disk -- counted through
+     the graph, not by how far apart two rows happen to be drawn. They are the
+     same number while the history is a straight line, which is the only shape
+     cairn itself makes; a branch someone moved in a terminal is where they
+     come apart. */
+  const parents = new Map(GRAPH.rows.map(r => [r.commit.sha, r.commit.parents]));
+  const mine = ancestry(tip, parents), theirs = ancestry(head, parents);
+  let behind = 0, ahead = 0;
+  for (const sha of theirs) if (!mine.has(sha)) behind++;
+  for (const sha of mine) if (!theirs.has(sha)) ahead++;
+  return {behind: behind, ahead: ahead};
+}
+
+function graphLayout(commits){
+  /* One pass, newest first, keeping a slot per lane holding the commit that
+     lane is waiting for. A commit takes the lane that wanted it, hands the
+     lane on to its first parent, and any further parent opens one of its
+     own. */
+  const at = new Map(commits.map((cm, i) => [cm.sha, i]));
+  const want = [];
+  return commits.map((cm, i) => {
+    let lane = want.indexOf(cm.sha);
+    if (lane < 0){ lane = want.indexOf(null); if (lane < 0) lane = want.length; }
+    want[lane] = null;
+    const links = [];
+    (cm.parents || []).forEach((p, k) => {
+      if (!at.has(p)) return;              /* older than this page of history */
+      let pl = want.indexOf(p);
+      if (pl < 0){
+        pl = k === 0 ? lane : want.indexOf(null);
+        if (pl < 0) pl = want.length;
+        want[pl] = p;
+      }
+      links.push({lane: pl, row: at.get(p)});
+    });
+    return {commit: cm, row: i, lane: lane, links: links};
+  });
+}
+
+function drawLanes(rows, lanes){
+  const el = $("glanes");
+  el.style.width = (GX0 + lanes * GLANEW) + "px";
+  el.style.height = (rows.length * GROWH) + "px";
+  if (graphS) graphS.paint();
+}
+
+function graphPaint(g, w, h){
+  const rows = (GRAPH && GRAPH.rows) || [];
+  const x = l => GX0 + l * GLANEW, y = r => r * GROWH + GROWH / 2;
+  /* The lane itself is deliberately quiet: the colour in this panel means a
+     client, and the spine is not one. */
+  g.lineWidth = 1.7;
+  g.strokeStyle = c("dim");
+  g.globalAlpha = .5;
+  for (const r of rows){
+    for (const link of r.links){
+      g.beginPath();
+      g.moveTo(x(r.lane), y(r.row));
+      if (link.lane === r.lane){
+        g.lineTo(x(link.lane), y(link.row));
+      } else {
+        /* The bend a branch makes, one row deep, so a fork reads as a fork
+           rather than as a diagonal across the whole panel. */
+        const y1 = y(r.row), y2 = y(link.row), mid = (y1 + y2) / 2;
+        g.bezierCurveTo(x(r.lane), mid, x(link.lane), mid, x(link.lane), y2);
+      }
+      g.stroke();
+    }
+  }
+  g.globalAlpha = 1;
+  for (const r of rows){
+    const cm = r.commit, tone = c(clientColor(cm.client));
+    g.beginPath(); g.arc(x(r.lane), y(r.row), 5.2, 0, Math.PI * 2);
+    g.fillStyle = c("bg"); g.fill();
+    g.beginPath(); g.arc(x(r.lane), y(r.row), cm.refs.length ? 4.4 : 3.4,
+                         0, Math.PI * 2);
+    if (cm.client){ g.fillStyle = tone; g.fill(); }
+    else { g.strokeStyle = c("faint"); g.lineWidth = 1.4; g.stroke(); }
+    /* A ring says a client is parked here: the pills beside it say which. */
+    if (cm.refs.some(rf => rf.kind === "client")){
+      g.beginPath(); g.arc(x(r.lane), y(r.row), 7, 0, Math.PI * 2);
+      g.strokeStyle = tone; g.lineWidth = 1.3; g.stroke();
+    }
+  }
+}
+
+graphS = surface($("glanes"), graphPaint);
+
+function graphRow(r, headSha){
+  const cm = r.commit;
+  const el = document.createElement("div");
+  el.className = "grow" + (cm.files.length ? " pick" : "")
+               + (cm.sha === headSha ? " head" : "");
+  el.dataset.sha = cm.sha;
+  const bits = [];
+  for (const rf of cm.refs)
+    bits.push('<span class="pill ' + (rf.kind === "trunk" ? "trunk" : "")
+            + '" style="color:var(--' + (rf.kind === "trunk" ? "dim"
+                                        : clientColor(rf.name)) + ')">'
+            + esc(rf.name) + (rf.kind === "client" && rf.branch === GRAPH.you
+                              ? " · you" : "") + "</span>");
+  bits.push('<span class="sub">' + esc(cm.subject) + "</span>");
+  /* Always the span, even with nobody in it: an adopted commit has no client
+     and the columns after it should still line up with the rows above. */
+  bits.push('<span class="by" style="color:var(--' + clientColor(cm.client)
+          + ')">' + esc(cm.client || "") + "</span>");
+  bits.push('<span class="when">' + esc(rel(cm.at)) + "</span>",
+            '<span class="gsha">' + esc(cm.short) + "</span>");
+  el.innerHTML = bits.join("");
+  el.title = cm.files.length
+    ? cm.files.join("\n") + (cm.files.length === 1 ? "\n\nClick to read this "
+        + "version of it." : "\n\nClick to read the first of them at this "
+        + "commit.")
+    : "";
+  return el;
+}
+
+function drawGraph(){
+  const list = $("growlist"), legend = $("glegend");
+  dropSurfacesIn(legend);
+  if (!GRAPH || !GRAPH.rows.length){
+    list.innerHTML = '<div class="empty">No history yet.</div>';
+    legend.innerHTML = '<div class="ghead">Clients</div>'
+                     + '<div class="none">Nobody has written anything.</div>';
+    $("glanes").style.height = "0px";
+    return;
+  }
+  const lanes = GRAPH.rows.reduce((m, r) => Math.max(m, r.lane + 1), 1);
+  $("grows").style.setProperty("--gutter",
+    (GX0 + lanes * GLANEW + 10) + "px");
+  list.innerHTML = "";
+  for (const r of GRAPH.rows) list.appendChild(graphRow(r, GRAPH.head));
+  drawLanes(GRAPH.rows, lanes);
+
+  /* The legend is the point of the panel: the graph answers "what happened",
+     this answers "and who is where in it". */
+  legend.innerHTML = '<div class="ghead">Clients</div>';
+  const seats = [];
+  for (const r of GRAPH.rows)
+    for (const rf of r.commit.refs)
+      if (rf.kind === "client") seats.push([rf, r]);
+  if (!seats.length)
+    legend.insertAdjacentHTML("beforeend",
+      '<div class="none">Nobody else is here.</div>');
+  for (const [rf, r] of seats){
+    const gap = distance(GRAPH.head, r.commit.sha), behind = gap.behind;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "gcl" + (rf.active ? "" : " idle");
+    b.innerHTML = "<canvas></canvas><span class=\"who\">" + esc(rf.name)
+                + (rf.branch === GRAPH.you ? " · you" : "")
+                + '</span><span class="at">'
+                + (behind > 0 ? behind + " behind" : "up to date") + "</span>";
+    b.title = rf.name + "\n" + rf.branch
+            + (rf.seen ? "\nlast here " + rel(rf.seen) : "")
+            + "\n\nIts branch marks the commit this client has read. A save "
+            + "from it is merged against whatever has landed since."
+            + (behind > 0 ? "\n\nIt is " + plural(behind, "commit")
+                          + " behind the notes on disk." : "")
+            + (gap.ahead > 0 ? "\n\nIt also has " + plural(gap.ahead, "commit")
+                             + " of its own that the notes on disk do not — a "
+                             + "branch someone moved in a terminal, not "
+                             + "anything cairn does." : "");
+    b.addEventListener("click", () => {
+      const row = list.children[r.row];
+      if (row) row.scrollIntoView({block: "center"});
+    });
+    legend.appendChild(b);
+    /* Not the footer's dot(), which paints a state -- ok, warn, bad. This one
+       paints a client's colour, the same one its pill and its commits carry,
+       and fills it only while the client is actually here. */
+    const tone = clientColor(rf.name);
+    surface(b.firstElementChild, (g, w, h) => {
+      g.beginPath(); g.arc(w / 2, h / 2, w / 2 - 1, 0, Math.PI * 2);
+      if (rf.active){ g.fillStyle = c(tone); g.fill(); }
+      else { g.strokeStyle = c(tone); g.lineWidth = 1.4; g.stroke(); }
+    }).paint();
+  }
+}
+
+async function loadGraph(){
+  if (graphBusy || document.body.dataset.graph !== "on") return;
+  graphBusy = true;
+  try {
+    const r = await api("/api/graph");
+    /* The panel rides the status poll, so most answers say exactly what the
+       last one said. Rebuilding the rows anyway would throw away the scroll
+       position twice a minute for nothing. */
+    const sig = JSON.stringify([r.head, r.you,
+                                (r.commits || []).map(cm => cm.sha), r.refs]);
+    if (sig === graphSig){ graphBusy = false; return; }
+    graphSig = sig;
+    const rows = graphLayout(r.commits || []);
+    for (const row of rows){
+      row.commit.refs = (r.refs && r.refs[row.commit.sha]) || [];
+      row.commit.files = row.commit.files || [];
+    }
+    GRAPH = {rows: rows, head: r.head, you: r.you, trunk: r.trunk};
+    const keep = $("gscroll").scrollTop;
+    drawGraph();
+    $("gscroll").scrollTop = keep;
+  } catch (e){
+    GRAPH = null; graphSig = "";
+    $("growlist").innerHTML = '<div class="empty">' + esc(e.message) + "</div>";
+  }
+  graphBusy = false;
+}
+
+$("growlist").addEventListener("click", e => {
+  const row = e.target.closest(".grow");
+  if (!row || !GRAPH) return;
+  const r = GRAPH.rows.find(x => x.commit.sha === row.dataset.sha);
+  if (!r || !r.commit.files.length) return;
+  const path = r.commit.files[0];
+  /* Open the note first where it still exists, so the version dialog's
+     Restore has somewhere to restore into. */
+  if (NOTES.some(n => n.path === path) && (!dirty || !current
+      || current.path === path))
+    open_(path);
+  showVersion(r.commit, path);
+});
 
 /* --------------------------- activity panel ---------------------------
    Every line cairn has run, asked for by sequence number so an open panel
@@ -3430,7 +3765,8 @@ async function doBackup(){
    Attributes, not classes: the mode switch owns body's dataset.mode and the
    panels sit beside it there.                                          */
 
-const PANELS = {left: $("leftBtn"), right: $("rightBtn"), console: consoleBtn};
+const PANELS = {left: $("leftBtn"), right: $("rightBtn"), console: consoleBtn,
+                graph: $("graphBtn")};
 
 function panel(which, on){
   document.body.dataset[which] = on ? "on" : "off";
@@ -3441,13 +3777,14 @@ function panel(which, on){
     LOG_EMPTY = !consoleEl.children.length || !!consoleEl.querySelector(".idle");
     scheduleLog(0);
   }
+  if (which === "graph" && on) loadGraph();
   /* Narrow enough that a panel covers the note rather than sitting beside it:
      two of them at once would cover it twice over. */
-  if (on && which !== "console" && window.innerWidth <= 900){
+  if (on && which !== "console" && which !== "graph" && window.innerWidth <= 900){
     const other = which === "left" ? "right" : "left";
     if (document.body.dataset[other] === "on") panel(other, false);
   }
-  if (which !== "console"){
+  if (which !== "console" && which !== "graph"){
     /* The panes just changed width; the surfaces inside them need it. */
     requestAnimationFrame(() => { mapS.paint(); gripS.paint(); spy(); });
   }
@@ -3464,13 +3801,15 @@ const mod = e => MAC ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
 
 function restorePanels(){
   const wide = window.innerWidth > 900;
-  for (const which of ["left", "right", "console"]){
+  for (const which of ["left", "right", "console", "graph"]){
     let want = null;
     try { want = localStorage.getItem("cairn-panel-" + which); } catch (e) {}
-    if (want === null) want = (which !== "console" && wide) ? "on" : "off";
+    if (want === null) want = (which === "left" || which === "right") && wide
+                            ? "on" : "off";
     /* A phone that once opened a panel on a desktop-width window should still
        open on the note itself. */
-    panel(which, want === "on" && (wide || which === "console"));
+    panel(which, want === "on"
+                 && (wide || which === "console" || which === "graph"));
   }
 }
 
@@ -3629,6 +3968,7 @@ $("refusedBtn").addEventListener("click", () => showRefusal(null));
 $("leftBtn").addEventListener("click", () => toggle("left"));
 $("rightBtn").addEventListener("click", () => toggle("right"));
 consoleBtn.addEventListener("click", () => toggle("console"));
+$("graphBtn").addEventListener("click", () => toggle("graph"));
 window.addEventListener("resize", () => {
   /* Dragging a wide window narrow with both panels open would leave the note
      under two overlays at once. */
@@ -3694,6 +4034,7 @@ document.addEventListener("keydown", e => {
     if (e.key === "b"){ e.preventDefault(); toggle("left"); }
     if (e.key === "e"){ e.preventDefault(); toggle("right"); }
     if (e.key === "j"){ e.preventDefault(); toggle("console"); }
+    if (e.key === "g"){ e.preventDefault(); toggle("graph"); }
   }
   if (e.key === "Escape"){
     if ($("vveil").classList.contains("open")) closeVersion();
@@ -3702,6 +4043,7 @@ document.addEventListener("keydown", e => {
     else if (dlgOpen()) closeDialog();
     else if (document.activeElement === qEl){ qEl.value = ""; drawList(""); qEl.blur(); }
     else if (document.body.dataset.console === "on") panel("console", false);
+    else if (document.body.dataset.graph === "on") panel("graph", false);
   }
   if (e.key === "/" && document.activeElement !== qEl && document.activeElement !== edEl
       && !dlgOpen() && document.activeElement !== $("dlgName")){

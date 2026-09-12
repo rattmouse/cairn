@@ -780,6 +780,61 @@ def clients_info(me=None):
     return info
 
 
+GRAPH_FORMAT = "--format=%H%x1f%h%x1f%ct%x1f%s%x1f%P%x1f%b%x1e"
+
+
+def graph_log(me=None, limit=60):
+    """The commit graph the footer draws: trunk, and every client's bookmark.
+
+    One request rather than a log plus a ref listing plus the client file,
+    because the three only mean anything together: a lane is a branch, and a
+    branch here is a browser. The lanes themselves are laid out in the client
+    -- it is geometry, and it belongs next to the canvas that draws it.
+    """
+    head = _git("rev-parse", "HEAD")
+    refs, tips = {}, []
+    if head:
+        tips.append(head)
+        refs.setdefault(head, []).append({"kind": "trunk",
+                                          "name": TRUNK or "trunk"})
+    with CLIENTS_LOCK:
+        by_branch = {v.get("branch"): dict(v, id=k) for k, v in CLIENTS.items()}
+    now = time.time()
+    for branch, sha, _when in client_branches():
+        rec = by_branch.get(branch) or {}
+        refs.setdefault(sha, []).append(
+            {"kind": "client", "branch": branch,
+             "name": rec.get("label") or branch.rsplit("/", 1)[-1],
+             "seen": rec.get("last"),
+             "active": bool(rec.get("last") and now - rec["last"] < 300)})
+        tips.append(sha)
+    commits = []
+    if tips:
+        # The tips are object names git just printed, not anything from a
+        # request, and they land in a fixed argv list like every other call.
+        out = _git("log", "--topo-order", "-%d" % limit, GRAPH_FORMAT,
+                   *list(dict.fromkeys(tips)))
+        for v in parse_log(out or ""):
+            v["parents"] = [p for p in (v.pop("parents", "") or "").split() if p]
+            v.pop("body", None)
+            commits.append(v)
+        # The notes each commit touched, so a row in the graph can be opened
+        # rather than only read. A second log rather than --name-only on the
+        # first: the names would land inside the body field and have to be
+        # picked back out of it, and this way each format stays one line.
+        names = _git("log", "--topo-order", "-%d" % limit, "--format=%x1e%H",
+                     "--name-only", *list(dict.fromkeys(tips))) or ""
+        touched = {}
+        for chunk in names.split("\x1e"):
+            lines = [l.strip() for l in chunk.strip().splitlines() if l.strip()]
+            if lines:
+                touched[lines[0]] = [l for l in lines[1:] if l.endswith(".md")][:20]
+        for v in commits:
+            v["files"] = touched.get(v["sha"], [])
+    return {"head": head, "trunk": TRUNK, "commits": commits, "refs": refs,
+            "you": me["branch"] if me else None}
+
+
 def git_commit(rel, message):
     """Stage one path — or a list of them — and commit only those. (ok, output).
 
@@ -1329,16 +1384,23 @@ RENAMED_FROM = re.compile(r"(?m)^was (.+)$")
 
 
 def parse_log(out):
-    """git log, as written by LOG_FORMAT, into what the history panel draws."""
+    """git log, as written by LOG_FORMAT or GRAPH_FORMAT, into what the
+    history panel and the graph draw. GRAPH_FORMAT is the same fields with
+    the parents in front of the body, which is the one thing a graph needs
+    and a list of versions does not."""
     versions = []
     for chunk in (out or "").split("\x1e"):
         bits = chunk.strip("\n").split("\x1f")
         if len(bits) >= 4 and bits[2].isdigit():
-            body = bits[4] if len(bits) > 4 else ""
+            parents = bits[4] if len(bits) > 5 else ""
+            body = bits[5] if len(bits) > 5 else (bits[4] if len(bits) > 4 else "")
             who = re.search(r"(?m)^Client: (.+)$", body)
-            versions.append({"sha": bits[0], "short": bits[1], "at": int(bits[2]),
-                             "subject": bits[3], "body": body,
-                             "client": who.group(1) if who else None})
+            v = {"sha": bits[0], "short": bits[1], "at": int(bits[2]),
+                 "subject": bits[3], "body": body,
+                 "client": who.group(1) if who else None}
+            if parents:
+                v["parents"] = parents
+            versions.append(v)
     return versions
 
 
@@ -2524,6 +2586,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                         "git": git_info(), "vault": vault_info(),
                                         "backup": backup_status(),
                                         "clients": clients_info(self.client())})
+
+        if path == "/api/graph":
+            # The footer's graph: who is where in the history. Read-only, and
+            # nothing from the request reaches git -- the only argument is a
+            # commit count, and it is clamped here.
+            if not self.authed():
+                return self.fail(403, "not unlocked")
+            q = urllib.parse.parse_qs(url.query)
+            raw = (q.get("limit") or ["60"])[0]
+            limit = int(raw) if raw.isdigit() else 60
+            payload = graph_log(self.client(create=False), max(5, min(limit, 200)))
+            return self.send_json(200, dict(payload, ok=True))
 
         if path == "/api/history":
             # Every version of one note, or of the whole vault. Read-only, and
