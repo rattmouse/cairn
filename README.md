@@ -185,6 +185,14 @@ line above the editor: *2 notes changed on another device — including this
 one*, with the paths and a Reload. It is measured in commits, not guessed from
 a clock, and Reload keeps anything unsaved in your textarea.
 
+The same line covers a note written straight onto disk — by another editor, a
+script, a `git checkout` — which moves no commit and so cannot be counted that
+way: cairn compares what is uncommitted in the vault against the copy your
+browser is holding, and says *changed on disk, outside cairn*. It asks again
+the moment you come back to the tab, which is usually the moment after you
+made the change. Before, you found out at save time, having typed against a
+stale note for an hour.
+
 **Merging.** A save carries the commit its copy came from. If the vault has
 moved on, cairn three-way merges your edit against what is there now — the
 same thing a pull request does, done in the half-second of a save rather than

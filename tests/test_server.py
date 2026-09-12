@@ -1060,6 +1060,22 @@ def test_clients(vault, port):
               "Both of us agreed" in
               open(os.path.join(vault, note["path"]), encoding="utf-8").read())
 
+        # --- a note written straight onto disk, while cairn runs -------
+        # It moves no branch, so the count above cannot see it. The browser
+        # has to hear about it before it types an hour into a stale buffer.
+        outside = os.path.join(vault, "Outside.md")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("# Outside\n\nWritten by something that is not cairn.\n")
+        st = json.loads(call(alice, base + "/api/status")[1])
+        disk = st["clients"].get("disk") or []
+        check("a note written outside cairn is reported as changed on disk",
+              any(d["path"] == "Outside.md" for d in disk), disk)
+        check("and carries the mtime that says whether it is news",
+              all(isinstance(d.get("mtime"), float) for d in disk), disk)
+        check("a note the browser is already holding is not in the list",
+              not any(d["path"] == note["path"] for d in disk), disk)
+        os.remove(outside)
+
         # --- a client with no cookie is served exactly as before -------
         plain, _ = client()
         code, body = call(plain, base + "/api/notes",

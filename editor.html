@@ -2715,6 +2715,11 @@ $("autoBtn").addEventListener("click", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && AUTO && !autoHeld && dirty && !saving && !modalOpen())
     save(true);
+  /* Coming back is the moment to find out the vault moved while you were in
+     the other program that moved it. Ask now rather than waiting out the
+     poll: it is one cheap call, and the answer is the whole point of the
+     line above the editor. */
+  if (!document.hidden) refreshStatus();
 });
 
 /* ------------------------------- history -------------------------------
@@ -3220,12 +3225,30 @@ function drawClients(){
      open rather than about the machine. Shown only when another browser has
      actually moved something. */
   const c = CLIENTS, el = $("elsewhere");
-  const behind = c && c.behind;
-  if (!behind){ el.hidden = true; return; }
-  const changed = c.changed || [];
+  const behind = (c && c.behind) || 0;
+  /* Two ways a note can have moved under this page: another browser committed
+     it, or something that is not cairn wrote it straight to disk and no read
+     has adopted it yet. The second is the one that used to be found out at
+     save time, so it belongs on the same line -- what the Reload button does
+     answers both, and adopts the second on its way past.
+
+     Only the ones this page is not already holding, though: an uncommitted
+     note it has read is not news. That is also what keeps a note a hook
+     refuses -- which stays dirty for as long as it offends the hook -- from
+     saying so on every poll for the rest of the session. */
+  const disk = ((c && c.disk) || []).filter(d => {
+    const n = NOTES.find(x => x.path === d.path);
+    return !n || d.mtime === null || Math.abs(n.mtime - d.mtime) > 0.001;
+  }).map(d => d.path);
+  const committed = (c && c.changed) || [];
+  if (!behind && !disk.length){ el.hidden = true; return; }
+  const changed = committed.concat(disk.filter(p => !committed.includes(p)));
+  const where = behind && disk.length ? "changed on another device and on disk"
+              : behind               ? "changed on another device"
+              :                        "changed on disk, outside cairn";
   const mine = current && changed.includes(current.path);
   $("elseWhat").innerHTML =
-    plural(changed.length || behind, "note") + " changed on another device"
+    plural(changed.length || behind, "note") + " " + where
     + (mine ? " — <b>including this one</b>" : "")
     + ' <span class="sep">·</span> ' + esc(changed.slice(0, 3).join(", "))
     + (changed.length > 3 ? " …" : "");
