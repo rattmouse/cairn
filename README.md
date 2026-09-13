@@ -209,6 +209,30 @@ left it.
 
 Both versions stay in `git log` whatever you pick.
 
+**While it happens, not afterwards.** Every page holds one long poll open on
+the vault. When someone else's save lands, the browsers reading that note hear
+about it in about a second and do the merge there and then, rather than
+storing it up for whenever you next press Save:
+
+- Nothing unsaved here? The note updates in place. Your scroll position and
+  your caret stay where they were.
+- Something unsaved, somewhere else in the note? The two are merged into your
+  editor under your caret, and the status line says whose edit arrived. Your
+  text is still unsaved and still yours; it is now sitting on top of theirs.
+- Something unsaved in the same lines? The conflict dialog opens immediately,
+  with the two versions side by side. Nothing was written, and you settle it
+  while you still remember typing your half.
+
+A line above the editor names anyone else who has the same note open. It is
+worked out from the polls themselves — a browser that stops asking stops being
+there a minute or so later — and the server keeps no copy of what anyone is
+typing. Nothing is sent between browsers but "a commit landed, here is what it
+touched"; the text always comes from git.
+
+This is still one vault, one token and one person's devices. Two people can
+use it on a network they both trust, but there are no accounts and no
+permissions, and anyone with the token can do anything.
+
 ## History
 
 The second tab on the right. Every commit that touched the open note, newest
@@ -432,6 +456,15 @@ the same thing. Not a release process — a number that moves when the editor
 does, so a screenshot, a bug report and a running server can be talked about
 as the same thing.
 
+- **0.6** — two people in one note, while it is happening. Every page holds a
+  long poll open on `/api/events`, so a save landing elsewhere reaches the
+  browsers reading that note in about a second: the note updates in place if
+  nothing here is unsaved, merges into the editor under your caret if your
+  edit is somewhere else in it, and opens the conflict dialog on the spot if
+  you both wrote in the same lines. `/api/rebase` is that merge with the save
+  taken out — it writes nothing. A line above the editor names whoever else
+  has the note open, worked out from the polls themselves; the server keeps
+  no copy of what anyone is typing.
 - **0.5** — an edit does not have to arrive through the browser. A note
   written straight onto disk is committed on its own, with its own title and
   a trailer saying where it came from, as soon as cairn next reads or writes

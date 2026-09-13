@@ -142,7 +142,7 @@ MIME = {
 # somewhere else. 0.5 stopped assuming an edit arrives through the browser:
 # a note written straight onto disk is committed like any other, a client
 # that is not a browser can say what it is, and a note can be renamed.
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 # A fallback only: main() replaces this with the token persisted in the
 # state directory. Generating it per process meant every restart logged
@@ -199,6 +199,17 @@ RUN_LOG = []
 RUN_LOG_MAX = 600
 RUN_LOG_LOCK = threading.Lock()
 _run_seq = 0
+
+EVENTS = []
+EVENTS_MAX = 200
+# A Condition rather than a Lock: a browser waits on the next event instead of
+# asking again every few seconds, and a commit wakes everyone at once.
+EVENTS_LOCK = threading.Condition()
+_event_seq = 0
+_waiters = 0
+MAX_WAITERS = 12          # one held thread per waiting browser, so cap them
+HERE = {}                 # client id -> which note it is holding open
+HERE_TTL = 90             # a browser that stops polling is gone this long after
 
 
 # --------------------------------------------------------------------------
@@ -441,6 +452,119 @@ def run_log_since(n):
     """Lines newer than sequence number n, and the newest number there is."""
     with RUN_LOG_LOCK:
         return [e for e in RUN_LOG if e["n"] > n], _run_seq
+
+
+# --------------------------------------------------------------------------
+# the live feed
+# --------------------------------------------------------------------------
+#
+# The same append-only ring with sequence numbers as the activity log above,
+# with two differences: a browser can wait on the next entry rather than ask
+# for one, and what travels on it is what has happened to the vault — a commit
+# landed, and someone opened a note.
+#
+# It carries no note text and the server holds none. An event says a commit
+# happened and which notes it touched; the text is still only on disk and in
+# git, and a browser that wants it asks for it. Presence is nothing more than
+# the set of clients currently waiting in /api/events: it is written by their
+# polls, it ages out on its own, and it is never saved anywhere.
+
+def bump(kind, **fields):
+    """Record one event and wake everyone waiting for it."""
+    global _event_seq
+    with EVENTS_LOCK:
+        _event_seq += 1
+        EVENTS.append(dict(fields, n=_event_seq, at=time.time(), kind=kind))
+        del EVENTS[:-EVENTS_MAX]
+        EVENTS_LOCK.notify_all()
+        return _event_seq
+
+
+def bump_commit(notes, client=None, verb="Update"):
+    """Say that trunk moved, and which notes moved with it.
+
+    The commit is named so a browser can tell its own save's event from
+    another device's, and the notes so one holding a note open knows whether
+    this concerns it. `_git` is called at the point of use, when HEAD is
+    already what this event is about.
+    """
+    if isinstance(notes, str):
+        notes = [notes]
+    return bump("commit", head=_git("rev-parse", "HEAD"),
+                notes=[n for n in notes if n], verb=verb,
+                client=(client or {}).get("label"))
+
+
+def events_since(n):
+    """Events newer than n, and the newest number there is."""
+    with EVENTS_LOCK:
+        return [e for e in EVENTS if e["n"] > n], _event_seq
+
+
+def mark_here(me, rel):
+    """Note that this client is holding `rel` open, and say so if it moved.
+
+    Only a change is announced. A poll that says the same thing as the last
+    one must not wake every other browser, or the feed would be a treadmill:
+    each wake answers a poll, each answer starts another.
+    """
+    if not me:
+        return None
+    with EVENTS_LOCK:
+        was = HERE.get(me["id"])
+        moved = not was or was.get("path") != rel
+        HERE[me["id"]] = {"label": me.get("label") or "browser",
+                          "path": rel, "at": time.time()}
+    if not moved:
+        return None
+    if not rel and not (was and was.get("path")):
+        # A browser with nothing open has not arrived anywhere, and saying so
+        # would put an event on the feed for every page load. Leaving a note
+        # is worth announcing; never having been in one is not.
+        return None
+    # The number is handed back so the poll that caused this does not wake on
+    # it. Telling a browser where it already knows it is would return every
+    # first poll instantly, and each answer starts another poll.
+    return bump("here", client=me.get("label"), note=rel)
+
+
+def here_now(me=None):
+    """Who else is holding a note open, as of the polls they are sitting in."""
+    now = time.time()
+    with EVENTS_LOCK:
+        for cid in [k for k, v in HERE.items() if now - v["at"] > HERE_TTL]:
+            HERE.pop(cid, None)
+        return [{"label": v["label"], "path": v["path"], "at": v["at"]}
+                for cid, v in HERE.items()
+                if v["path"] and not (me and cid == me.get("id"))]
+
+
+def wait_for_event(since, seconds):
+    """Hold until the feed passes `since`, or the time runs out.
+
+    Returns False when there was no room to wait — one thread is held per
+    waiting browser, so past the cap a client is answered at once and falls
+    back to asking again in a moment, which is slower and still correct.
+    """
+    global _waiters
+    with EVENTS_LOCK:
+        if _event_seq > since:
+            return True
+        if _waiters >= MAX_WAITERS:
+            return False
+        _waiters += 1
+    try:
+        deadline = time.monotonic() + seconds
+        with EVENTS_LOCK:
+            while _event_seq <= since:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                EVENTS_LOCK.wait(min(left, 1.0))
+    finally:
+        with EVENTS_LOCK:
+            _waiters -= 1
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -1001,6 +1125,11 @@ def adopt_outside(label=None):
 def adopt_and_log(label=None):
     """adopt_outside(), with what it did written to the activity panel."""
     adopted, refused = adopt_outside(label)
+    if adopted:
+        # A note written straight onto disk reaches the browsers holding it
+        # by the same feed as one saved from a browser. From here on it is an
+        # ordinary commit and nothing downstream can tell the difference.
+        bump_commit(adopted, {"label": label or "outside cairn"}, "Adopt")
     for rel in adopted:
         log_run("adopted %s — written outside cairn" % rel)
     for rel, why in refused:
@@ -1177,9 +1306,55 @@ def save_note(full, content, client=None, base=None, auto=False):
                     "content": previous if previous is not None else "",
                     "mtime": os.path.getmtime(full) if os.path.isfile(full) else None}
         client_mark(client)
+        bump_commit(rel, client, "Autosave" if auto else "Update")
         return {"ok": True, "commit": detail, "merged": merged, "content": content,
                 "mtime": os.path.getmtime(full),
                 "head": _git("rev-parse", "HEAD")}
+
+
+def rebase_note(full, content, base):
+    """What this edit would become on top of trunk — without writing it.
+
+    save_note()'s merge with the write taken out, against the same two sides
+    and answering in the same shape. It is the merge moved from the moment of
+    saving to the moment another browser's commit arrives, which is the whole
+    of what makes two people in one note bearable: a hunk you have to settle
+    is settled while you still remember typing it, and one you do not is
+    folded in before you notice.
+
+    Nothing here writes, commits, stages or adopts. A note dirty on disk is
+    merged against the bytes that are there, which is what a save would do
+    after committing them (invariant 14) — so what comes back is what saving
+    would give, a moment early.
+    """
+    rel = os.path.relpath(full, VAULT)
+    with GIT_LOCK:
+        head = _git("rev-parse", "HEAD")
+        if not os.path.isfile(full):
+            return {"ok": False, "error": "there is no note at that path now",
+                    "head": head}
+        try:
+            ondisk = open(full, encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError) as e:
+            return {"ok": False, "error": str(e), "head": head}
+        if not base or base == head:
+            return {"ok": True, "content": content, "head": head, "merged": False}
+        was = show_at(base, rel)
+        if was is None or was == ondisk:
+            # Nothing moved under this note, whatever else moved on trunk.
+            return {"ok": True, "content": content, "head": head, "merged": False}
+        if content == ondisk:
+            return {"ok": True, "content": content, "head": head, "merged": False}
+        nonce = secrets.token_hex(4)
+        text, clashed = merge3(was, content, ondisk, nonce)
+        if text is None:
+            return {"ok": False, "error": "the merge could not be run", "head": head}
+        if clashed:
+            return {"ok": False, "conflict": {
+                "path": rel, "base": base, "head": head,
+                "yours": content, "vault": ondisk,
+                "segments": split_conflicts(text, nonce)}}
+        return {"ok": True, "content": text, "head": head, "merged": True}
 
 
 def write_note(full, content, verb, client=None):
@@ -1240,6 +1415,7 @@ def remove_note(full, client=None):
             # than a silent divergence between the two.
             return dest, out
         client_mark(client)
+        bump_commit(rel, client, "Delete")
         return dest, None
 
 
@@ -1372,6 +1548,9 @@ def rename_note(full, dest, client=None):
         client_mark(client)
         git_fresh()
         log_run("renamed %s to %s" % (old_rel, new_rel))
+        # Both names, and every note whose links were repointed: a browser
+        # holding any of them has something to pick up.
+        bump_commit([old_rel, new_rel] + sorted(originals), client, "Rename")
         return {"ok": True, "path": new_rel, "was": old_rel,
                 "relinked": sorted(originals),
                 "commit": _git("rev-parse", "--short", "HEAD") or "",
@@ -2640,6 +2819,46 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True, "sha": sha, "path": rel,
                                         "content": text})
 
+        if path == "/api/events":
+            # The live feed: what has landed on trunk since the sequence
+            # number this browser last saw, and who else is holding a note
+            # open. The request holds for up to half a minute waiting for the
+            # next event rather than asking again every second — one thread
+            # per waiting browser, which is why there is a cap.
+            if not self.authed():
+                return self.fail(403, "not unlocked")
+            q = urllib.parse.parse_qs(url.query)
+            try:
+                since = int((q.get("since") or ["0"])[0])
+            except ValueError:
+                since = 0
+            try:
+                seconds = float((q.get("wait") or ["25"])[0])
+            except ValueError:
+                seconds = 25.0
+            seconds = max(0.0, min(seconds, 30.0))
+            # The note this browser is looking at. Nothing is read from disk
+            # for it and nothing is written, but it is a path from a request
+            # and it goes through safe_path() like every other one — being
+            # only ever echoed back to other browsers is not a reason to skip
+            # the check, it is a reason the check is cheap.
+            watching = (q.get("path") or [""])[0]
+            if watching:
+                try:
+                    safe_path(watching)
+                except ValueError:
+                    watching = ""
+            me = self.client()
+            mine = mark_here(me, watching)
+            # Wait past our own arrival, but still report it: the sequence
+            # number has to move for this browser too, or it asks for the same
+            # events again next time.
+            from_seq = max(since, mine) if mine else since
+            waited = wait_for_event(from_seq, seconds) if seconds else True
+            events, seq = events_since(since)
+            return self.send_json(200, {"ok": True, "seq": seq, "events": events,
+                                        "here": here_now(me), "waited": waited})
+
         if path == "/api/run/log":
             if not self.authed():
                 return self.fail(403, "not unlocked")
@@ -2835,6 +3054,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # not make it into the history, which is worth telling the user.
             return self.send_json(200, {"ok": True, "trashed": dest,
                                         "uncommitted": why})
+
+        if route == "/api/rebase":
+            # The merge, without the save. A browser whose note just moved
+            # under it asks what its unsaved text becomes on top of what is
+            # there now: the merged text, or the hunks that clash in the same
+            # shape a refused save sends them. Nothing is written either way,
+            # so there is nothing to undo if the answer is never used.
+            if not self.authed():
+                return self.fail(403, "not unlocked")
+            try:
+                data = self.body_json()
+                full = safe_path(data["path"])
+                content = data["content"]
+                if not isinstance(content, str):
+                    raise ValueError("content must be a string")
+            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                return self.fail(400, str(e))
+            base = data.get("base")
+            if not isinstance(base, str) or not re.fullmatch(r"[0-9a-f]{7,64}", base or ""):
+                base = None
+            result = rebase_note(full, content, base)
+            if result.get("conflict"):
+                return self.send_json(409, {"ok": False,
+                                            "error": "this note changed under you "
+                                                     "in the same lines",
+                                            "conflict": result["conflict"]})
+            if not result["ok"]:
+                return self.fail(409, result.get("error") or "the merge did not happen")
+            return self.send_json(200, result)
 
         if route == "/api/terminal":
             # Opening a window is the one thing here that reaches outside the

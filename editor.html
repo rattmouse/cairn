@@ -192,6 +192,13 @@ body[data-right="off"] #outline{display:none}
   color:var(--ink);display:flex;align-items:center;gap:10px}
 #elsewhere[hidden]{display:none}
 #elsewhere button{margin-left:auto;flex:0 0 auto}
+/* Quieter than the line above it: nobody has done anything yet, someone is
+   just here. It says so and gets out of the way. */
+#here{margin:0 16px 10px;padding:5px 12px;border-radius:8px;
+  border:1px dashed var(--edge);font-size:12px;color:var(--dim);
+  display:flex;align-items:center;gap:8px}
+#here[hidden]{display:none}
+#here b{color:var(--ink);font-weight:600}
 
 /* ------------------------- the conflict resolver -------------------------
    A save that could not be merged, laid out hunk by hunk. It covers the
@@ -646,6 +653,7 @@ body[data-graph="on"] #graph{display:flex}
         save again.</div>
       <pre id="refusedWhy"></pre>
     </div>
+    <div id="here" hidden role="status"><span id="hereWho"></span></div>
     <div id="elsewhere" hidden role="status">
       <button class="btn" id="elseBtn" type="button">Reload</button>
       <span id="elseWhat"></span>
@@ -2652,6 +2660,10 @@ function open_(path, how){
   $("renameBtn").disabled = false;
   reveal(n.path);
   drawList(qEl.value);
+  /* Say where we are now rather than at the end of the poll already in
+     flight, so the other browser's line appears as this one opens. */
+  drawHere();
+  pokeLive();
   return true;
 }
 
@@ -2844,6 +2856,171 @@ document.addEventListener("visibilitychange", () => {
      line above the editor. */
   if (!document.hidden) refreshStatus();
 });
+
+/* --------------------------------- live ---------------------------------
+   Two people in one note, without either of them finding out at save time.
+
+   One long poll sits on /api/events. It is the whole of the transport: what
+   comes back is which commits have landed and who else is holding a note
+   open, never a note's text, and the server holds no more than that either.
+   Being in the poll *is* the presence — a browser that stops asking stops
+   being here a minute or so later, and nothing has to be told it left.
+
+   When a commit touches the note on this screen, the merge that a save would
+   have done happens now instead. Nothing of ours unsaved: take the new text.
+   Something unsaved and elsewhere in the note: /api/rebase says what the two
+   make together and it is spliced in under the caret. Something unsaved in
+   the same lines: the conflict dialog opens on the spot, with two small hunks
+   to settle instead of the two long ones it would have been an hour later.
+   Invariant 8 holds throughout — nothing is merged silently that both sides
+   changed, and nothing is written by any of it.                          */
+
+let LIVE_SEQ = 0, HERE = [];
+let liveBusy = false, liveSoon = null, liveAbort = null, liveMiss = 0;
+
+function scheduleLive(ms){
+  clearTimeout(liveSoon);
+  liveSoon = setTimeout(liveTick, ms);
+}
+
+/* The note changed under the poll's feet: drop the wait and ask again saying
+   where we are now. Nothing is lost by it — the sequence number does not
+   move, so the next answer starts where this one would have. */
+function pokeLive(){
+  if (liveAbort) liveAbort.abort();
+}
+
+async function liveTick(){
+  if (liveBusy) return;
+  liveBusy = true;
+  const watching = current ? current.path : "";
+  liveAbort = new AbortController();
+  try {
+    /* The first answer only has to say where the feed is up to, so it does
+       not wait; every one after it holds until something happens. */
+    const r = await api("/api/events?since=" + LIVE_SEQ
+                        + "&wait=" + (LIVE_SEQ ? 25 : 0)
+                        + (watching ? "&path=" + encodeURIComponent(watching) : ""),
+                        {signal: liveAbort.signal});
+    const running = LIVE_SEQ > 0;
+    LIVE_SEQ = r.seq;
+    HERE = r.here || [];
+    liveMiss = 0;
+    drawHere();
+    /* Events from before this page loaded are history it already has. */
+    if (running) for (const e of r.events) await onLive(e);
+    liveBusy = false;
+    scheduleLive(0);
+  } catch (e){
+    liveBusy = false;
+    if (e.name === "AbortError") return scheduleLive(0);
+    /* The server is gone, or busy, or the laptop shut its lid. Back off, but
+       never stop: this feed is how the page finds out anything at all. */
+    liveMiss = Math.min(liveMiss + 1, 6);
+    scheduleLive(1000 * liveMiss);
+  }
+}
+
+async function onLive(e){
+  if (e.kind !== "commit") return;          /* presence is drawn from `here` */
+  if (e.head && e.head === HEAD) return;    /* our own save, already in hand */
+  /* Whatever it touched, the footer's counts and the line above the editor
+     have both just moved. */
+  refreshStatus();
+  if (!current || !(e.notes || []).includes(current.path)) return;
+  if (saving) return;         /* the save in flight is about to move HEAD */
+  if (modalOpen()) return;    /* a dialog is a decision being made; wait */
+  await pull(e);
+}
+
+async function pull(e){
+  const who = e.client || "another device";
+  if (!dirty){
+    /* Nothing here to keep, so there is nothing to merge: take the note as it
+       now is. The caret and the scroll stay where the reader left them. */
+    try {
+      const r = await api("/api/history/show?sha=" + encodeURIComponent(e.head)
+                        + "&path=" + encodeURIComponent(current.path));
+      spliceText(r.content);
+      current.raw = r.content;
+      HEAD = e.head;
+      afterPull(who + " saved this note", false);
+    } catch (err){
+      /* Renamed out from under us, or deleted. The line above the editor is
+         the honest answer to that, and reloading is the reader's call. */
+      refreshStatus();
+    }
+    return;
+  }
+  try {
+    const r = await api("/api/rebase", {method: "POST", body: JSON.stringify(
+      {path: current.path, content: edEl.value, base: HEAD})});
+    HEAD = r.head || HEAD;
+    if (r.merged){
+      spliceText(r.content);
+      afterPull("merged " + who + "\u2019s edit into yours", true);
+    }
+  } catch (err){
+    if (err.status === 409 && err.detail && err.detail.conflict){
+      /* Both of us in the same lines. Nothing was written, and this is the
+         same dialog a refused save opens — settled now, while both edits are
+         still a minute old. */
+      setStatus("this note changed under you — pick a side", "error");
+      openConflict(err.detail.conflict);
+      return;
+    }
+    refreshStatus();
+  }
+}
+
+function afterPull(what, keepDirty){
+  preview();
+  drawStats();
+  drawOutline();
+  mapS.paint();
+  if (!keepDirty) setDirty(false);
+  setStatus(what, "saved");
+  setTimeout(() => { if (statusEl.textContent === what) setStatus("", ""); }, 5000);
+}
+
+/* Put new text in the textarea without throwing away where the reader was.
+   The caret keeps its place in whatever is unchanged around the edit, which
+   is what makes someone else's paragraph arriving mid-sentence bearable.
+
+   Not keepCaret(), which is a different job on a different element: that one
+   puts the caret back into live mode's block after a re-render, and having
+   two functions of that name in one file cost an afternoon. */
+function spliceText(next){
+  if (edEl.value === next) return;
+  const was = edEl.value, at = edEl.selectionStart, to = edEl.selectionEnd;
+  const top = edEl.scrollTop;
+  let p = 0;
+  while (p < was.length && p < next.length && was[p] === next[p]) p++;
+  let tail = 0;
+  while (tail < was.length - p && tail < next.length - p
+         && was[was.length - 1 - tail] === next[next.length - 1 - tail]) tail++;
+  const delta = next.length - was.length;
+  const move = a => a <= p ? a
+             : a >= was.length - tail ? Math.max(p, a + delta)
+             : Math.min(a, next.length);
+  edEl.value = next;
+  try { edEl.setSelectionRange(move(at), move(to)); } catch (err) {}
+  edEl.scrollTop = top;
+}
+
+function drawHere(){
+  /* Only the people in the note on this screen. Who is reading something else
+     is the Clients panel's business, not this line's. */
+  const el = $("here");
+  const mates = current ? HERE.filter(h => h.path === current.path) : [];
+  if (!mates.length){ el.hidden = true; return; }
+  const names = mates.map(h => "<b>" + esc(h.label) + "</b>");
+  $("hereWho").innerHTML =
+    (names.length === 1 ? names[0] + " is"
+     : names.slice(0, -1).join(", ") + " and " + names[names.length - 1] + " are")
+    + " in this note too";
+  el.hidden = false;
+}
 
 /* ------------------------------- history -------------------------------
    Every save is a commit, and this is the panel that finally reads them. It
@@ -4166,6 +4343,9 @@ window.addEventListener("beforeunload", e => {
     /* After the notes are up: the panels are usable without it, and it is the
        one call that can spawn subprocesses on the server.                   */
     refreshStatus();
+    /* And the feed, which from here on is how this page hears about anything
+       another browser, another device or another program does. */
+    scheduleLive(0);
   } catch (e){
     $("boot").classList.add("fail");
     $("bootMsg").textContent = "Could not reach the notes server: " + e.message;
