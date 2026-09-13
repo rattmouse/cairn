@@ -1887,6 +1887,266 @@ done
 """
 
 
+def test_live(vault, port):
+    """The live feed and the merge that is not a save.
+
+    Two people in one note: a browser hears what landed and who is here from
+    /api/events, and asks /api/rebase what its unsaved text becomes on top of
+    what just arrived. Neither endpoint writes anything, and the second one is
+    the merge from save_note() with the save taken out — so the checks that
+    matter most here are the ones about what did *not* happen to the vault.
+    """
+    print("\nthe live feed")
+
+    p, token, _ = start(vault, port)
+    try:
+        base = "http://127.0.0.1:%d" % port
+        op, _ = client()
+        form(op, base, token)
+        bare = urllib.request.build_opener()          # the other person
+        mira = {"Authorization": "Bearer " + token, "Content-Type": "application/json",
+                "X-Cairn-Client": "Mira on the iPad"}
+
+        s_, _ = call(bare, base + "/api/events?wait=0")
+        check("the feed needs a token like everything else", s_ == 403, s_)
+
+        s_, b = call(op, base + "/api/events?since=0&wait=0")
+        first = json.loads(b)
+        check("a first poll says where the feed is, and waits for nothing",
+              s_ == 200 and "seq" in first and first["events"] == [], b[:120])
+        seq = first["seq"]
+
+        # --- a save is news, and says whose and which note ---------------
+        listing = notes_of(op, base)
+        note = next(n for n in listing["notes"] if n["path"] == "Notes/Alpha.md")
+        call(bare, base + "/api/note",
+             data=json.dumps({"path": note["path"], "content": note["raw"] + "\nmira was here\n",
+                              "base": listing["head"]}).encode(),
+             method="PUT", headers=mira)
+        s_, b = call(op, base + "/api/events?since=%d&wait=5" % seq)
+        feed = json.loads(b)
+        commits = [e for e in feed["events"] if e["kind"] == "commit"]
+        check("a save from another client lands on the feed", bool(commits), b[:200])
+        check("and names the note it touched",
+              commits and commits[-1]["notes"] == ["Notes/Alpha.md"], commits[-1:])
+        check("and who wrote it",
+              commits and commits[-1]["client"] == "Mira on the iPad", commits[-1:])
+        check("and the commit it is now at",
+              commits and commits[-1]["head"] == git(vault, "rev-parse", "HEAD"),
+              commits[-1:] )
+        seq = feed["seq"]
+
+        # --- a poll waits, and is woken rather than polled awake ---------
+        woke = []
+
+        def wait_then():
+            """Its own opener: this poll holds a connection for as long as it
+            takes, and the checks around it must not queue behind it."""
+            t0 = time.time()
+            s2, b2 = call(client()[0], base + "/api/events?since=%d&wait=20" % seq,
+                          headers={"X-Notes-Token": token})
+            woke.append((time.time() - t0, json.loads(b2)))
+
+        waiter = threading.Thread(target=wait_then)
+        waiter.start()
+        time.sleep(1.0)
+        listing = notes_of(op, base)
+        note = next(n for n in listing["notes"] if n["path"] == "Notes/Alpha.md")
+        call(bare, base + "/api/note",
+             data=json.dumps({"path": note["path"], "content": note["raw"] + "\nand again\n",
+                              "base": listing["head"]}).encode(),
+             method="PUT", headers=mira)
+        waiter.join(25)
+        check("a waiting poll is woken by the save rather than timing out",
+              woke and woke[0][0] < 10, woke[0][0] if woke else "never returned")
+        seq = woke[0][1]["seq"] if woke else seq
+
+        # --- nothing happening: the poll comes back empty, on time -------
+        t0 = time.time()
+        s_, b = call(op, base + "/api/events?since=%d&wait=2" % seq)
+        took = time.time() - t0
+        check("and comes back empty when nothing happens",
+              s_ == 200 and json.loads(b)["events"] == [] and 1.5 < took < 8, took)
+
+        # --- presence is the poll, and nothing else ----------------------
+        call(bare, base + "/api/events?since=%d&wait=0&path=Notes/Alpha.md" % seq,
+             headers=mira)
+        s_, b = call(op, base + "/api/events?since=%d&wait=0" % seq)
+        here = json.loads(b)["here"]
+        check("someone holding a note open shows up as here",
+              any(h["label"] == "Mira on the iPad" and h["path"] == "Notes/Alpha.md"
+                  for h in here), here)
+        s_, b = call(bare, base + "/api/events?since=%d&wait=0&path=Notes/Alpha.md" % seq,
+                     headers=mira)
+        check("and is not reported back to itself",
+              all(h["label"] != "Mira on the iPad" for h in json.loads(b)["here"]),
+              json.loads(b)["here"])
+        s_, _ = call(bare, base + "/api/leave", data=b"", method="POST", headers=mira)
+        s_, b = call(op, base + "/api/events?since=%d&wait=0" % seq)
+        check("and is gone the moment it says it is leaving",
+              all(h["label"] != "Mira on the iPad" for h in json.loads(b)["here"]),
+              json.loads(b)["here"])
+        s_, _ = call(bare, base + "/api/leave", data=b"", method="POST",
+                     headers={"Content-Type": "application/json"})
+        check("leaving needs a token like everything else", s_ == 403, s_)
+        call(bare, base + "/api/events?since=%d&wait=0&path=Notes/Alpha.md" % seq,
+             headers=mira)                        # back again for what follows
+        s_, b = call(bare, base + "/api/events?wait=0&path=../../etc/passwd", headers=mira)
+        check("a path that escapes the vault is dropped, not echoed",
+              s_ == 200 and all("passwd" not in (h["path"] or "")
+                                for h in json.loads(b)["here"]), b[:160])
+
+        # --- the cap: more waiters than threads to hold them -------------
+        done = []
+
+        waited = []
+
+        def hold():
+            t0 = time.time()
+            s2, b2 = call(client()[0], base + "/api/events?since=999999&wait=3",
+                          headers={"X-Notes-Token": token})
+            done.append(time.time() - t0)
+            waited.append(json.loads(b2).get("waited"))
+
+        threads = [threading.Thread(target=hold) for _ in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        check("every poll past the cap is answered instead of held",
+              len(done) == 16, len(done))
+        check("and the answer says it was not held, so the client can slow down",
+              any(w is False for w in waited), waited[:4])
+
+        # --- the merge that writes nothing -------------------------------
+        listing = notes_of(op, base)
+        note = next(n for n in listing["notes"] if n["path"] == "Notes/Alpha.md")
+        mine = note["raw"].replace("# Alpha", "# Alpha\n\nmy own new line")
+        theirs = note["raw"] + "\ntheirs at the end\n"
+        call(bare, base + "/api/note",
+             data=json.dumps({"path": note["path"], "content": theirs,
+                              "base": listing["head"]}).encode(),
+             method="PUT", headers=mira)
+
+        head_was = git(vault, "rev-parse", "HEAD")
+        bytes_was = open(os.path.join(vault, "Notes", "Alpha.md"), encoding="utf-8").read()
+        s_, b = call(op, base + "/api/rebase",
+                     data=json.dumps({"path": note["path"], "content": mine,
+                                      "base": listing["head"]}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        merged = json.loads(b)
+        check("a rebase merges an edit made beside someone else's",
+              s_ == 200 and merged["merged"]
+              and "my own new line" in merged["content"]
+              and "theirs at the end" in merged["content"], s_)
+        check("and writes nothing at all",
+              git(vault, "rev-parse", "HEAD") == head_was
+              and open(os.path.join(vault, "Notes", "Alpha.md"),
+                       encoding="utf-8").read() == bytes_was
+              and git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+
+        # --- and stops where a save would stop ---------------------------
+        clash = note["raw"] + "\nmine at the end instead\n"
+        s_, b = call(op, base + "/api/rebase",
+                     data=json.dumps({"path": note["path"], "content": clash,
+                                      "base": listing["head"]}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        body = json.loads(b)
+        check("a clash comes back as hunks, not a merge", s_ == 409
+              and any(sg["kind"] == "clash" for sg in body["conflict"]["segments"]), s_)
+        check("and still writes nothing",
+              git(vault, "rev-parse", "HEAD") == head_was
+              and git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+        s_, _ = call(op, base + "/api/rebase",
+                     data=json.dumps({"path": "../../etc/passwd", "content": "x"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("and refuses a path that leaves the vault", s_ == 400, s_)
+        s_, _ = call(bare, base + "/api/rebase",
+                     data=json.dumps({"path": note["path"], "content": "x"}).encode(),
+                     method="POST", headers={"Content-Type": "application/json"})
+        check("and needs a token", s_ == 403, s_)
+
+        # --- an edit written straight to disk is news too ----------------
+        seq = json.loads(call(op, base + "/api/events?wait=0")[1])["seq"]
+        with open(os.path.join(vault, "Notes", "Beta.md"), "a") as f:
+            f.write("\nWritten straight onto disk by something else.\n")
+        notes_of(op, base)                       # a read adopts it
+        s_, b = call(op, base + "/api/events?since=%d&wait=0" % seq)
+        adopted = [e for e in json.loads(b)["events"]
+                   if e["kind"] == "commit" and "Notes/Beta.md" in (e.get("notes") or [])]
+        check("a note written outside cairn reaches the feed as a commit",
+              bool(adopted), json.loads(b)["events"][-2:])
+    finally:
+        p.terminate()
+        p.wait(timeout=5)
+
+
+def test_presence_expiry():
+    """A browser that stops asking stops being here, and that is announced.
+
+    Nobody tells the server a tab closed, so leaving is a silence and
+    forget_stale() is what reads it. Checked against the module rather than
+    over HTTP: the alternative is a test that sits still for the whole of
+    HERE_TTL, and a slow test is one that gets skipped.
+    """
+    print("\npresence")
+    mod = load_server()
+    mod.HERE.clear()
+    del mod.EVENTS[:]
+
+    mod.mark_here({"id": "client-aaaaaaaa", "label": "Mira on the iPad"}, "Notes/Alpha.md")
+    check("holding a note open puts you here",
+          [h["label"] for h in mod.here_now()] == ["Mira on the iPad"], mod.here_now())
+    check("and says so on the feed",
+          any(e["kind"] == "here" and e["note"] == "Notes/Alpha.md" for e in mod.EVENTS),
+          mod.EVENTS[-1:])
+
+    # Still polling: what a live browser looks like a moment later.
+    mod.mark_here({"id": "client-aaaaaaaa", "label": "Mira on the iPad"}, "Notes/Alpha.md")
+    check("a poll that says the same thing keeps you here, quietly",
+          len(mod.here_now()) == 1
+          and len([e for e in mod.EVENTS if e["kind"] == "here"]) == 1,
+          [e["kind"] for e in mod.EVENTS])
+
+    # Leaving on purpose: the common case, and the one that should not wait.
+    mod.drop_here({"id": "client-aaaaaaaa", "label": "Mira on the iPad"})
+    check("a browser that says it is leaving goes at once",
+          mod.here_now() == [] and mod.EVENTS[-1].get("left") is True, mod.EVENTS[-1])
+
+    mod.mark_here({"id": "client-aaaaaaaa", "label": "Mira on the iPad"}, "Notes/Alpha.md")
+
+    # And now the polls just stop, with nobody to say why.
+    mod.HERE["client-aaaaaaaa"]["at"] -= mod.HERE_TTL + 1
+    gone = mod.forget_stale()
+    check("a browser that stopped asking is forgotten",
+          mod.here_now() == [] and len(gone) == 1, mod.here_now())
+    check("and the leaving is on the feed, so the others hear it",
+          mod.EVENTS[-1]["kind"] == "here" and mod.EVENTS[-1].get("left") is True,
+          mod.EVENTS[-1])
+    check("the memory is short enough to be believed",
+          mod.HERE_TTL <= 60, "%ss" % mod.HERE_TTL)
+
+
+def test_editor_names():
+    """No two top-level functions in editor.html share a name.
+
+    The whole client is one file and one scope, so a second `function foo()`
+    silently replaces the first everywhere it is called. That happened once,
+    to keepCaret(): a new one for the plain textarea shadowed the live-mode
+    one, the save path called it with a callback, and the editor wrote the
+    text of a javascript function into the note. A grep is a cheap guard for
+    something a reader cannot see and the parser will not complain about.
+    """
+    print("\neditor.html")
+    text = open(os.path.join(ROOT, "editor.html"), encoding="utf-8").read()
+    names = re.findall(r"(?m)^function (\w+)\(", text)
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    check("no two top-level functions share a name", not dupes,
+          ", ".join(dupes) or "%d functions" % len(names))
+
+
 def test_renderer():
     """The markdown renderer and the block splitter, in editor.html.
 
@@ -2132,6 +2392,9 @@ def main():
         test_backup(vault, 8940)
         test_status(vault, 8938)
         test_status_in_repo(vault, 8939)
+        test_live(vault, 8945)
+        test_presence_expiry()
+        test_editor_names()
         test_renderer()
     finally:
         shutil.rmtree(vault, ignore_errors=True)
