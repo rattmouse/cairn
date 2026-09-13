@@ -1981,6 +1981,16 @@ def test_live(vault, port):
         check("and is not reported back to itself",
               all(h["label"] != "Mira on the iPad" for h in json.loads(b)["here"]),
               json.loads(b)["here"])
+        s_, _ = call(bare, base + "/api/leave", data=b"", method="POST", headers=mira)
+        s_, b = call(op, base + "/api/events?since=%d&wait=0" % seq)
+        check("and is gone the moment it says it is leaving",
+              all(h["label"] != "Mira on the iPad" for h in json.loads(b)["here"]),
+              json.loads(b)["here"])
+        s_, _ = call(bare, base + "/api/leave", data=b"", method="POST",
+                     headers={"Content-Type": "application/json"})
+        check("leaving needs a token like everything else", s_ == 403, s_)
+        call(bare, base + "/api/events?since=%d&wait=0&path=Notes/Alpha.md" % seq,
+             headers=mira)                        # back again for what follows
         s_, b = call(bare, base + "/api/events?wait=0&path=../../etc/passwd", headers=mira)
         check("a path that escapes the vault is dropped, not echoed",
               s_ == 200 and all("passwd" not in (h["path"] or "")
@@ -1989,11 +1999,14 @@ def test_live(vault, port):
         # --- the cap: more waiters than threads to hold them -------------
         done = []
 
+        waited = []
+
         def hold():
             t0 = time.time()
             s2, b2 = call(client()[0], base + "/api/events?since=999999&wait=3",
                           headers={"X-Notes-Token": token})
             done.append(time.time() - t0)
+            waited.append(json.loads(b2).get("waited"))
 
         threads = [threading.Thread(target=hold) for _ in range(16)]
         for t in threads:
@@ -2002,6 +2015,8 @@ def test_live(vault, port):
             t.join(30)
         check("every poll past the cap is answered instead of held",
               len(done) == 16, len(done))
+        check("and the answer says it was not held, so the client can slow down",
+              any(w is False for w in waited), waited[:4])
 
         # --- the merge that writes nothing -------------------------------
         listing = notes_of(op, base)
@@ -2066,6 +2081,52 @@ def test_live(vault, port):
     finally:
         p.terminate()
         p.wait(timeout=5)
+
+
+def test_presence_expiry():
+    """A browser that stops asking stops being here, and that is announced.
+
+    Nobody tells the server a tab closed, so leaving is a silence and
+    forget_stale() is what reads it. Checked against the module rather than
+    over HTTP: the alternative is a test that sits still for the whole of
+    HERE_TTL, and a slow test is one that gets skipped.
+    """
+    print("\npresence")
+    mod = load_server()
+    mod.HERE.clear()
+    del mod.EVENTS[:]
+
+    mod.mark_here({"id": "client-aaaaaaaa", "label": "Mira on the iPad"}, "Notes/Alpha.md")
+    check("holding a note open puts you here",
+          [h["label"] for h in mod.here_now()] == ["Mira on the iPad"], mod.here_now())
+    check("and says so on the feed",
+          any(e["kind"] == "here" and e["note"] == "Notes/Alpha.md" for e in mod.EVENTS),
+          mod.EVENTS[-1:])
+
+    # Still polling: what a live browser looks like a moment later.
+    mod.mark_here({"id": "client-aaaaaaaa", "label": "Mira on the iPad"}, "Notes/Alpha.md")
+    check("a poll that says the same thing keeps you here, quietly",
+          len(mod.here_now()) == 1
+          and len([e for e in mod.EVENTS if e["kind"] == "here"]) == 1,
+          [e["kind"] for e in mod.EVENTS])
+
+    # Leaving on purpose: the common case, and the one that should not wait.
+    mod.drop_here({"id": "client-aaaaaaaa", "label": "Mira on the iPad"})
+    check("a browser that says it is leaving goes at once",
+          mod.here_now() == [] and mod.EVENTS[-1].get("left") is True, mod.EVENTS[-1])
+
+    mod.mark_here({"id": "client-aaaaaaaa", "label": "Mira on the iPad"}, "Notes/Alpha.md")
+
+    # And now the polls just stop, with nobody to say why.
+    mod.HERE["client-aaaaaaaa"]["at"] -= mod.HERE_TTL + 1
+    gone = mod.forget_stale()
+    check("a browser that stopped asking is forgotten",
+          mod.here_now() == [] and len(gone) == 1, mod.here_now())
+    check("and the leaving is on the feed, so the others hear it",
+          mod.EVENTS[-1]["kind"] == "here" and mod.EVENTS[-1].get("left") is True,
+          mod.EVENTS[-1])
+    check("the memory is short enough to be believed",
+          mod.HERE_TTL <= 60, "%ss" % mod.HERE_TTL)
 
 
 def test_editor_names():
@@ -2332,6 +2393,7 @@ def main():
         test_status(vault, 8938)
         test_status_in_repo(vault, 8939)
         test_live(vault, 8945)
+        test_presence_expiry()
         test_editor_names()
         test_renderer()
     finally:

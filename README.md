@@ -224,9 +224,10 @@ storing it up for whenever you next press Save:
   while you still remember typing your half.
 
 A line above the editor names anyone else who has the same note open. It is
-worked out from the polls themselves — a browser that stops asking stops being
-there a minute or so later — and the server keeps no copy of what anyone is
-typing. Nothing is sent between browsers but "a commit landed, here is what it
+worked out from the polls themselves: a closing tab says so on its way out and
+disappears at once, and one that just stops asking — a crash, a shut lid, a
+sleeping phone — is dropped three quarters of a minute later. The server keeps
+no copy of what anyone is typing. Nothing is sent between browsers but "a commit landed, here is what it
 touched"; the text always comes from git.
 
 This is still one vault, one token and one person's devices. Two people can

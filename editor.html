@@ -2910,7 +2910,11 @@ async function liveTick(){
     /* Events from before this page loaded are history it already has. */
     if (running) for (const e of r.events) await onLive(e);
     liveBusy = false;
-    scheduleLive(0);
+    /* `waited: false` means the server had no thread to hold this poll open
+       and answered at once. Asking again immediately would be a spin, and
+       under exactly the load that caused it — so this is the one case that
+       goes back to asking every few seconds instead of waiting. */
+    scheduleLive(r.waited === false ? 3000 : 0);
   } catch (e){
     liveBusy = false;
     if (e.name === "AbortError") return scheduleLive(0);
@@ -2922,7 +2926,7 @@ async function liveTick(){
 }
 
 async function onLive(e){
-  if (e.kind !== "commit") return;          /* presence is drawn from `here` */
+  if (e.kind !== "commit") return;          /* presence came with the answer */
   if (e.head && e.head === HEAD) return;    /* our own save, already in hand */
   /* Whatever it touched, the footer's counts and the line above the editor
      have both just moved. */
@@ -3007,6 +3011,13 @@ function spliceText(next){
   try { edEl.setSelectionRange(move(at), move(to)); } catch (err) {}
   edEl.scrollTop = top;
 }
+
+/* Closing the tab is the ordinary way to leave and the only one the browser
+   will tell anyone about, so it does. A crash, a shut lid or a network that
+   stops answering are silences, and those are the timeout's job. */
+window.addEventListener("pagehide", () => {
+  try { navigator.sendBeacon("/api/leave"); } catch (e) {}
+});
 
 function drawHere(){
   /* Only the people in the note on this screen. Who is reading something else

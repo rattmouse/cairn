@@ -209,7 +209,11 @@ _event_seq = 0
 _waiters = 0
 MAX_WAITERS = 12          # one held thread per waiting browser, so cap them
 HERE = {}                 # client id -> which note it is holding open
-HERE_TTL = 90             # a browser that stops polling is gone this long after
+# A live browser refreshes this every time its poll comes back, which is at
+# most every 30 seconds, so 45 is slack rather than patience. It used to be
+# 90, and "they closed the tab a minute ago and the line is still there" is
+# not presence, it is a rumour.
+HERE_TTL = 45
 
 
 # --------------------------------------------------------------------------
@@ -528,12 +532,45 @@ def mark_here(me, rel):
     return bump("here", client=me.get("label"), note=rel)
 
 
-def here_now(me=None):
-    """Who else is holding a note open, as of the polls they are sitting in."""
+def forget_stale():
+    """Drop the clients whose polls stopped, and say so.
+
+    Nobody tells the server that a browser closed, so leaving is a silence
+    and this is what reads it. The departure goes on the feed like any other
+    event, which is what wakes the browsers still holding that note instead
+    of leaving them to find out when their own poll next comes back.
+    """
     now = time.time()
     with EVENTS_LOCK:
-        for cid in [k for k, v in HERE.items() if now - v["at"] > HERE_TTL]:
+        gone = [(cid, v) for cid, v in HERE.items() if now - v["at"] > HERE_TTL]
+        for cid, _ in gone:
             HERE.pop(cid, None)
+    for _, v in gone:
+        if v["path"]:
+            bump("here", client=v["label"], note="", left=True)
+    return [v for _, v in gone]
+
+
+def drop_here(me):
+    """Forget a client that says it is going, and tell the others.
+
+    The timeout below is for silence — a crash, a closed lid, a network that
+    went away. A browser being closed is not silence: it can say so on its
+    way out, and then nobody spends three quarters of a minute being told
+    that someone who left is still reading.
+    """
+    if not me:
+        return None
+    with EVENTS_LOCK:
+        was = HERE.pop(me["id"], None)
+    if was and was.get("path"):
+        return bump("here", client=was["label"], note="", left=True)
+    return None
+
+
+def here_now(me=None):
+    """Who else is holding a note open, as of the polls they are sitting in."""
+    with EVENTS_LOCK:
         return [{"label": v["label"], "path": v["path"], "at": v["at"]}
                 for cid, v in HERE.items()
                 if v["path"] and not (me and cid == me.get("id"))]
@@ -2848,6 +2885,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     safe_path(watching)
                 except ValueError:
                     watching = ""
+            forget_stale()
             me = self.client()
             mine = mark_here(me, watching)
             # Wait past our own arrival, but still report it: the sequence
@@ -3054,6 +3092,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # not make it into the history, which is worth telling the user.
             return self.send_json(200, {"ok": True, "trashed": dest,
                                         "uncommitted": why})
+
+        if route == "/api/leave":
+            # Sent with navigator.sendBeacon as the page goes away, so there
+            # is nobody left to read the answer and nothing is read from the
+            # body. All it does is take one name off a list.
+            if not self.authed():
+                return self.fail(403, "not unlocked")
+            drop_here(self.client(create=False))
+            return self.send_json(200, {"ok": True})
 
         if route == "/api/rebase":
             # The merge, without the save. A browser whose note just moved
