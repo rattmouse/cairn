@@ -468,6 +468,11 @@ task lists nested to any depth, tables, blockquotes, `> [!NOTE]` callouts,
 horizontal rules, and YAML frontmatter. Footnotes and nested blockquotes are
 not handled.
 
+Lists indent with two spaces or with a tab, and a numbered list starts where
+you say it does: one resumed after a paragraph with `4.` is numbered from
+four, in the preview and in live mode alike. A fenced block written under a
+list item is code there too, indent and all.
+
 `docs/demo-vault/2 - Resources/Markdown Reference.md` exercises most of it.
 
 ## Tests
