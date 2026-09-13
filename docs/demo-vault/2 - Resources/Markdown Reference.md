@@ -28,6 +28,21 @@ https://example.org which become links on their own.
 - [x] Checked task
   - [ ] A subtask
 
+A numbered list picks up where it says it does, even after a paragraph:
+
+7. Seven
+8. Eight
+
+And a fenced block under an item is code, blank lines and all:
+
+- Run it, then read what it says:
+
+  ```sh
+  cairn --vault ~/Documents/notes
+
+  echo done
+  ```
+
 ## Quotes and callouts
 
 > An ordinary blockquote.

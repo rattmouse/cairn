@@ -1887,6 +1887,36 @@ done
 """
 
 
+def test_renderer():
+    """The markdown renderer and the block splitter, in editor.html.
+
+    Those are javascript, so this shells out to node — which cairn does not
+    depend on and never will (invariant 1 is python, git and a browser). When
+    node is not installed the checks are skipped and say so; the rest of the
+    suite, and the CI container, run exactly as before. The renderer is a pure
+    function, so the test file reads it out of editor.html and runs it:
+    nothing is built and nothing is served.
+    """
+    print("\nrenderer (javascript)")
+    script = os.path.join(ROOT, "tests", "test_renderer.js")
+    if not shutil.which("node"):
+        # Not a failure and not a pass. Unlike git, which the server itself
+        # needs and whose absence test_git counts against it, node is only
+        # how these particular checks are run.
+        print("  %-48s -- skipped (no node); run "
+              "`node tests/test_renderer.js` elsewhere"
+              % "the renderer's own checks")
+        return
+    p = subprocess.run(("node", script), stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, text=True, timeout=120)
+    out = p.stdout.strip().splitlines()
+    tally = next((l.strip() for l in reversed(out) if "passed," in l), "no tally")
+    if not check("the renderer's own checks pass", p.returncode == 0, tally):
+        for line in out:
+            if "FAIL" in line:
+                print("      " + line.strip())
+
+
 def load_server():
     """Import notes-server.py, for the few things worth checking without HTTP."""
     import importlib.util
@@ -2102,6 +2132,7 @@ def main():
         test_backup(vault, 8940)
         test_status(vault, 8938)
         test_status_in_repo(vault, 8939)
+        test_renderer()
     finally:
         shutil.rmtree(vault, ignore_errors=True)
         shutil.rmtree(STATE, ignore_errors=True)
