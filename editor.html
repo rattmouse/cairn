@@ -372,9 +372,15 @@ body.resizing{cursor:col-resize;user-select:none}
 #dlg p{margin:0 0 14px;font-size:12.5px;color:var(--dim);line-height:1.55}
 #dlg label{display:block;font-size:10.5px;color:var(--faint);margin:12px 0 5px;
   text-transform:uppercase;letter-spacing:.08em;font-weight:700}
-#dlgName{width:100%;padding:9px 11px;font-size:13.5px;background:var(--panel);
+#dlgName,#dlgFolderNew{width:100%;padding:9px 11px;font-size:13.5px;background:var(--panel);
   border:1px solid var(--edge);border-radius:var(--r);outline:none}
-#dlgName:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+#dlgName:focus,#dlgFolderNew:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+/* The way back out of the text box, so picking "New folder…" by mistake is
+   not a dead end you have to close the dialog to leave. It sits on the
+   field's own label line: under the field it reads as the label for whatever
+   comes next, which is exactly what it is not. */
+#dlg .dlgrow{display:flex;align-items:baseline;gap:10px}
+#dlg .dlgrow label{flex:1}
 #dlgErr{color:var(--bad);font-size:12px;min-height:17px;margin-top:9px}
 #dlgBtns{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
 
@@ -772,8 +778,13 @@ sits in the history (Ctrl/⌘-G)" aria-pressed="false">Clients</button>
   <h2 id="dlgTitle">New note</h2>
   <p id="dlgHint">Creates a markdown file with frontmatter already filled in.</p>
   <div id="dlgBody">
-    <label id="dlgFolderLabel">Folder</label>
+    <div class="dlgrow">
+      <label id="dlgFolderLabel">Folder</label>
+      <button class="lnk" id="dlgFolderBack" type="button" hidden>Pick one that exists</button>
+    </div>
     <div class="sel" id="dlgFolder"></div>
+    <input id="dlgFolderNew" placeholder="Areas/Health" autocomplete="off"
+      spellcheck="false" aria-label="New folder path" hidden>
     <label for="dlgName" id="dlgNameLabel">Title</label>
     <input id="dlgName" placeholder="Note title" autocomplete="off">
   </div>
@@ -1444,6 +1455,18 @@ function makeSelect(host, label){
   const api = {value: null, items: []};
   let cur = 0;
 
+  /* One place a choice lands, so `onpick` cannot be missed by whichever of
+     the mouse and the keyboard made it. It fires only for a choice a person
+     made — api.set() does not call it — because the one caller that wants it
+     swaps the whole control out, and doing that while filling the list in
+     would pull the list out from under itself. */
+  function pick(value){
+    api.value = value;
+    close();
+    paint();
+    if (api.onpick) api.onpick(value);
+  }
+
   function paint(){
     head.firstElementChild.textContent = (api.items.find(i => i[0] === api.value) || ["", "—"])[1];
     [...pop.children].forEach((b, i) => {
@@ -1458,7 +1481,7 @@ function makeSelect(host, label){
       const b = document.createElement("button");
       b.type = "button"; b.className = "opt"; b.textContent = it[1];
       b.setAttribute("role", "option");
-      b.addEventListener("click", () => { api.value = it[0]; close(); paint(); });
+      b.addEventListener("click", () => { pick(it[0]); });
       b.addEventListener("pointerenter", () => { cur = i; paint(); });
       pop.appendChild(b);
     });
@@ -1487,7 +1510,7 @@ function makeSelect(host, label){
       paint();
       pop.children[cur].scrollIntoView({block: "nearest"});
     } else if (e.key === "Enter" || e.key === " "){
-      if (api.isOpen()){ e.preventDefault(); api.value = api.items[cur][0]; close(); paint(); }
+      if (api.isOpen()){ e.preventDefault(); pick(api.items[cur][0]); }
     } else if (e.key === "Escape" && api.isOpen()){
       e.stopPropagation(); close();
     }
@@ -3460,6 +3483,7 @@ function folderMenu(dir){
   const inside = NOTES.filter(n => n.path.startsWith(dir + "/")).length;
   return [
     {label: "New note here…", run: () => openDialog("new", dir)},
+    {label: "New folder here…", run: () => openDialog("new", dir, true)},
     "-",
     {label: SHUT.has(dir) ? "Expand" : "Collapse", run: () => toggleFold(dir)},
     {label: "Rename or move…", run: () => openDialog("folder", dir)},
@@ -3476,6 +3500,7 @@ function folderMenu(dir){
 function treeMenu(){
   return [
     {label: "New note…", run: () => openDialog("new")},
+    {label: "New folder…", run: () => openDialog("new", null, true)},
     "-",
     {label: "Collapse all", disabled: !allFolders().size, run: () => foldAll(true)},
     {label: "Expand all", disabled: !SHUT.size, run: () => foldAll(false)}
@@ -3544,28 +3569,75 @@ listEl.addEventListener("scroll", () => closeMenu(false), {passive: true});
    the note in the editor. The toolbar buttons pass nothing and still mean the
    open note, so they behave exactly as they did. */
 const folderSel = makeSelect($("dlgFolder"), "Folder");
-let DLG_MODE = "new", DLG_PATH = null;
+let DLG_MODE = "new", DLG_PATH = null, DLG_AT = "(root)";
 
 const dlgFolderOf = path => path.split("/").slice(0, -1).join("/") || "(root)";
 
+/* The last entry in the folder list, which is not a folder at all: picking it
+   swaps the list for a text box and lets the person name one that is not
+   there yet.
+
+   An object rather than a string, so it cannot be mistaken for a path. The
+   list holds real folder paths and "(root)", and a sentinel that is another
+   string would be one bad folder name away from colliding with one. */
+const NEW_FOLDER = {};
+
 /* Every folder a note can be put in, which is every folder some note is
-   already in, plus the root. Derived from the notes exactly as the tree is:
-   a folder with nothing in it is not a folder cairn has. */
+   already in, plus the root — and the way to name one that is not there yet.
+
+   The existing ones are derived from the notes exactly as the tree is,
+   because a folder with nothing in it is not a folder cairn has. Which is
+   also why the last entry does not make a folder on its own: it names where a
+   note is about to go, and the folder is there because the note is. */
 function folderChoices(){
   return ["(root)", ...[...allFolders()].sort()]
-    .map(f => [f, f === "(root)" ? "Vault root" : f]);
+    .map(f => [f, f === "(root)" ? "Vault root" : f])
+    .concat([[NEW_FOLDER, "New folder…"]]);
 }
 
 /* Where a folder could go: anywhere but inside itself. The server refuses
    both that and a move into one of its own children, and offering a choice
-   whose only outcome is an error is worse than not offering it. */
+   whose only outcome is an error is worse than not offering it. A typed path
+   is checked the same way in dialogPath(), which is the only route to one. */
 function parentChoices(dir){
-  return folderChoices().filter(([f]) => f !== dir && !(f + "/").startsWith(dir + "/"));
+  return folderChoices().filter(([f]) =>
+    f === NEW_FOLDER || (f !== dir && !(f + "/").startsWith(dir + "/")));
 }
+
+/* The folder field has two shapes and this is the switch between them. The
+   text box carries the folder that was in context with a "/" after it, so
+   the common case — a new folder beside the notes you were just looking at —
+   is one word of typing rather than a whole path. */
+function folderTyping(on, at){
+  $("dlgFolder").hidden = on;
+  $("dlgFolderNew").hidden = !on;
+  $("dlgFolderBack").hidden = !on;
+  if (!on) return;
+  if (at !== undefined) $("dlgFolderNew").value = at;
+  $("dlgFolderNew").focus();
+  const end = $("dlgFolderNew").value.length;
+  $("dlgFolderNew").setSelectionRange(end, end);
+}
+
+const typingFolder = () => !$("dlgFolderNew").hidden;
+
+/* The prefill is whatever the list was showing, because that is the folder
+   the person was looking at when they decided it was not the one they wanted.
+   DLG_AT is remembered in openDialog() for exactly this: by the time the hook
+   runs, the select's own value is the sentinel. */
+folderSel.onpick = v => {
+  if (v === NEW_FOLDER) folderTyping(true, DLG_AT === "(root)" ? "" : DLG_AT + "/");
+};
+
+$("dlgFolderBack").addEventListener("click", () => {
+  folderTyping(false);
+  $("dlgName").focus();
+});
 
 const DLG_WORDS = {
   new: ["New note",
-        "Creates a markdown file with frontmatter already filled in.",
+        "Creates a markdown file with frontmatter already filled in. A folder "
+        + "that is not there yet is made along with it.",
         "Create", "Folder", "Title", "Note title"],
   rename: ["Rename or move note",
            "Moves the file and repoints every [[wikilink]] that names it — one "
@@ -3577,7 +3649,7 @@ const DLG_WORDS = {
            "Move", "Inside", "Name", "Folder name"]
 };
 
-function openDialog(mode, target){
+function openDialog(mode, target, typing){
   DLG_MODE = DLG_WORDS[mode] ? mode : "new";
   const folder = DLG_MODE === "folder";
   let path = target || null;
@@ -3592,6 +3664,13 @@ function openDialog(mode, target){
            : DLG_MODE === "rename" ? dlgFolderOf(path)
            : (target || (current ? current.folder : null));
   folderSel.set(folder ? parentChoices(path) : folderChoices(), at);
+  /* Not `at`: a folder the list does not have is not what the list settled
+     on, and the prefill has to be a folder that exists to be any use. */
+  DLG_AT = typeof folderSel.value === "string" ? folderSel.value : "(root)";
+  /* The list, every time — the text box is something you ask for. `typing`
+     is the one caller that wants it the other way round, and it asks after
+     the reset rather than instead of it. */
+  folderTyping(false);
 
   const w = DLG_WORDS[DLG_MODE];
   $("dlgTitle").textContent = w[0];
@@ -3605,8 +3684,49 @@ function openDialog(mode, target){
     : path.split("/").pop().replace(/\.md$/, "");
   $("dlgErr").textContent = "";
   $("veil").classList.add("open");
-  $("dlgName").focus();
-  $("dlgName").select();
+  /* "New folder…" on a menu lands here: the folder is the part that is not
+     decided yet, so it is the part that gets the caret. */
+  if (typing) folderSel.onpick(NEW_FOLDER);
+  else { $("dlgName").focus(); $("dlgName").select(); }
+}
+
+/* A typed folder path, or null with the reason shown.
+
+   The server is the real gate — safe_path() for a note, safe_dir() for a
+   folder, and neither takes this function's word for anything. What this is
+   for is saying no in the dialog, next to the field, rather than letting the
+   person press Create and read a 400 in the status line. The last rule is the
+   one that is not about safety: a note under a dot-folder or node_modules
+   would be written and committed and then never appear in the tree, because
+   list_notes() does not walk into either. */
+function typedFolder(){
+  const raw = $("dlgFolderNew").value.trim().replace(/^\/+|\/+$/g, "");
+  if (!raw){ $("dlgErr").textContent = "Give the folder a name."; return null; }
+  if (/[\\:*?"<>|]/.test(raw)){
+    $("dlgErr").textContent = 'Avoid \\ : * ? " < > | in a folder name.';
+    return null;
+  }
+  const parts = raw.split("/").map(p => p.trim());
+  if (parts.some(p => !p)){
+    $("dlgErr").textContent = "Two slashes in a row — take one out.";
+    return null;
+  }
+  if (parts.some(p => p === "." || p === "..")){
+    $("dlgErr").textContent = "A folder is named from the vault root down — "
+                            + "no . or .. in it.";
+    return null;
+  }
+  if (parts.some(p => p.startsWith(".") || p === "node_modules")){
+    $("dlgErr").textContent = "cairn does not look inside dot-folders or "
+                            + "node_modules, so a note there would never show up.";
+    return null;
+  }
+  const at = parts.join("/");
+  if (DLG_MODE === "folder" && (at + "/").startsWith(DLG_PATH + "/")){
+    $("dlgErr").textContent = "A folder cannot be moved inside itself.";
+    return null;
+  }
+  return at;
 }
 
 /* The path the dialog is describing, or null with the reason shown. */
@@ -3619,8 +3739,15 @@ function dialogPath(){
     $("dlgErr").textContent = 'Avoid / \\ : * ? " < > | in the ' + what + ".";
     return null;
   }
-  const at = folderSel.value;
-  return (at === "(root)" ? "" : at + "/") + name + (folder ? "" : ".md");
+  let at;
+  if (typingFolder()){
+    at = typedFolder();
+    if (at === null) return null;
+  } else {
+    at = folderSel.value;
+    if (at === "(root)") at = "";
+  }
+  return (at ? at + "/" : "") + name + (folder ? "" : ".md");
 }
 
 function submitDialog(){
@@ -4693,6 +4820,14 @@ $("trashBtn").addEventListener("click", () => trashNote());
 $("dlgCancel").addEventListener("click", closeDialog);
 $("dlgOk").addEventListener("click", submitDialog);
 $("dlgName").addEventListener("keydown", e => { if (e.key === "Enter") submitDialog(); });
+/* Enter here is "done with the folder", not "do it" — the title is still
+   empty at this point, and submitting would only put an error under it. */
+$("dlgFolderNew").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  $("dlgName").focus();
+  $("dlgName").select();
+});
 $("veil").addEventListener("click", e => { if (e.target === $("veil")) closeDialog(); });
 $("vveil").addEventListener("click", e => { if (e.target === $("vveil")) closeVersion(); });
 
