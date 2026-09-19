@@ -1630,10 +1630,12 @@ def rename_note(full, dest, client=None):
 #
 # A folder in cairn is not a thing in its own right: it exists exactly as long
 # as some note's path passes through it, which is also the only kind of folder
-# git records. So there is no "new folder" here — a folder appears when a note
-# is made inside it and is gone when the last one leaves — but moving and
-# trashing one are real operations, and doing them in the app rather than in a
-# file manager is what keeps the [[wikilinks]] and the history honest.
+# git records. So there is no endpoint here that makes one — a folder appears
+# when a note is made inside it and is gone when the last one leaves, and the
+# client's "New folder…" is a path typed into /api/new rather than a call of
+# its own. Moving and trashing one are real operations, though, and doing them
+# in the app rather than in a file manager is what keeps the [[wikilinks]] and
+# the history honest.
 #
 # The whole directory moves, not the notes out of it. A folder holds
 # attachments as well as notes, and moving the .md files while leaving the

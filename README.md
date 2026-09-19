@@ -272,9 +272,10 @@ you have arrowed to — and the menu acts on the row instead.
 On a note: open it, open it in a new tab, rename or move it, duplicate it,
 copy its `[[wikilink]]` or its path, or move it to the trash.
 
-On a folder: make a note in it, collapse or expand it, copy its path, rename
-or move it, or move the whole thing to the trash. On the empty space below the
-tree: a new note, and collapse or expand everything.
+On a folder: make a note in it, make a folder in it, collapse or expand it,
+copy its path, rename or move it, or move the whole thing to the trash. On the
+empty space below the tree: a new note, a new folder, and collapse or expand
+everything.
 
 **Moving a folder** moves the whole folder — the notes, and the images and
 other files beside them, because a folder whose notes moved without their
@@ -292,10 +293,18 @@ Nothing is deleted; the question says how many notes are about to go.
 empty note and saving over it, and names it `<title> copy`, counting up if
 that name is taken.
 
-A folder in cairn is not a thing in its own right — it is there exactly as
-long as some note's path runs through it, which is also the only kind of
-folder git records. So there is no "new folder": make a note in a folder that
-does not exist yet, by typing the path into New note, and the folder is there.
+**Making a folder.** A folder in cairn is not a thing in its own right — it is
+there exactly as long as some note's path runs through it, which is also the
+only kind of folder git records. So a folder is made by putting a note in one:
+the folder field in New note ends with **New folder…**, which turns it into a
+box you type a path into, and the folder is there because the note is. Nested
+paths work, and every level is made at once.
+
+**New folder…** on a folder's menu, or on the space below the tree, is the
+same dialog with the caret already in that box and the folder you were looking
+at filled in. The same box is in Rename and in Move folder, so a note can be
+moved into a folder that does not exist yet, and a folder into a parent that
+does not either.
 
 If the note you have open is one whose links were repointed, the editor keeps
 up with it: nothing unsaved and it simply takes the new text; unsaved work and
