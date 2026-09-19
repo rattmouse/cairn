@@ -79,7 +79,7 @@ Four parts, three of which you can put away:
 
 | Part | What's in it | Toggle |
 | --- | --- | --- |
-| Left | The vault as a tree. Folders come from the note paths, remember whether they were shut, and open themselves when you follow a link into one. Search flattens nothing — it filters and opens everything that matched. | `Ctrl/⌘-B` |
+| Left | The vault as a tree. Folders come from the note paths, remember whether they were shut, and open themselves when you follow a link into one. Search flattens nothing — it filters and opens everything that matched. Right-click a row for what you can do to it — see **Managing files and folders**. | `Ctrl/⌘-B` |
 | Middle | Source, preview, both, or **live** — see below. `Ctrl/⌘-\` cycles them. | — |
 | Right | Two tabs. **Outline**: the open note's headings, one entry per fenced code block, and every link it contains. Clicking an entry moves the preview *and* the caret to that line; scrolling the preview moves the highlight. **History**: every commit that touched this note, newest first — click one to read that version and put it back in the editor. | `Ctrl/⌘-E` |
 | Bottom | Always on. Left to right: where the vault is, the repository cairn keeps the notes in, and the backups. | — |
@@ -262,6 +262,45 @@ keeps the bare name.
 The whole of it is one commit or none. If the vault's pre-commit hook refuses
 it, the note is back under its old name and every rewritten link is back to
 the bytes it had.
+
+## Managing files and folders
+
+The buttons above the tree act on the note that happens to be open. **Right-
+click any row in the tree** — or press the menu key, or `Shift-F10`, on a row
+you have arrowed to — and the menu acts on the row instead.
+
+On a note: open it, open it in a new tab, rename or move it, duplicate it,
+copy its `[[wikilink]]` or its path, or move it to the trash.
+
+On a folder: make a note in it, collapse or expand it, copy its path, rename
+or move it, or move the whole thing to the trash. On the empty space below the
+tree: a new note, and collapse or expand everything.
+
+**Moving a folder** moves the whole folder — the notes, and the images and
+other files beside them, because a folder whose notes moved without their
+attachments is a folder of broken embeds. Every `[[wikilink]]` that named one
+of the notes by its path is repointed to follow it; one that named a note by
+its bare filename is left alone, because the filename did not change. All of
+it is one commit, or none: a pre-commit hook that refuses the move puts the
+folder back where it was and every rewritten link back to the bytes it had.
+
+**Trashing a folder** moves it, and everything in it, to `trash/` in the state
+directory, and commits the removal — the same two jobs trashing one note does.
+Nothing is deleted; the question says how many notes are about to go.
+
+**Duplicating a note** writes the copy in one commit rather than making an
+empty note and saving over it, and names it `<title> copy`, counting up if
+that name is taken.
+
+A folder in cairn is not a thing in its own right — it is there exactly as
+long as some note's path runs through it, which is also the only kind of
+folder git records. So there is no "new folder": make a note in a folder that
+does not exist yet, by typing the path into New note, and the folder is there.
+
+If the note you have open is one whose links were repointed, the editor keeps
+up with it: nothing unsaved and it simply takes the new text; unsaved work and
+it is merged, and clashing lines open the same pick-a-side dialog two browsers
+in one note would. See **Two browsers, one note**.
 
 ## Notes written from somewhere else
 
@@ -447,6 +486,9 @@ without invalidating anything.
   nothing from a request body is ever an argument.
 - A save that cannot be merged is refused rather than resolved for you.
 - Paths are resolved against the vault root; only `.md` files can be written.
+  A folder named in a request is checked the same way, and has to be one the
+  tree could have shown — which is what keeps `.git/` and the state directory
+  out of reach of a move or a trashing.
 - Opening a terminal is refused for anything but a browser on this machine,
   and it types the command rather than running it.
 

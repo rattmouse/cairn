@@ -141,6 +141,29 @@ body[data-right="off"] #outline{display:none}
 .lnk:disabled{opacity:.42;cursor:default}
 .empty{padding:22px 16px;font-size:12.5px;color:var(--faint);text-align:center;line-height:1.7}
 
+/* The tree's context menu. Positioned in the viewport rather than inside the
+   sidebar, so a row near the bottom of a short list can still show a long
+   menu -- #list scrolls and clips, and a menu that scrolled with it would be
+   cut off by the row that opened it. */
+#ctx{position:fixed;z-index:60;min-width:196px;max-width:280px;padding:5px;
+  background:var(--raise);border:1px solid var(--edge);border-radius:var(--r);
+  box-shadow:var(--shadow);animation:rise .1s ease-out}
+#ctx[hidden]{display:none}
+#ctx .mi{display:flex;align-items:center;gap:10px;width:100%;padding:7px 10px;
+  font-size:13px;text-align:left;background:none;border:0;border-radius:6px;
+  color:var(--ink);cursor:pointer;white-space:nowrap}
+#ctx .mi:hover:not(:disabled),#ctx .mi:focus-visible{background:var(--sel);outline:0}
+#ctx .mi:disabled{opacity:.42;cursor:default}
+#ctx .mi.danger{color:var(--bad)}
+#ctx .mi.danger:hover:not(:disabled),#ctx .mi.danger:focus-visible{background:var(--bad);color:#fff}
+#ctx .mi .k{margin-left:auto;padding-left:14px;font-size:11px;color:var(--faint)}
+#ctx .mi.danger:hover .k,#ctx .mi.danger:focus-visible .k{color:#fff}
+#ctx .msep{height:1px;margin:5px 7px;background:var(--edge-soft)}
+/* The row the menu is about stays marked while it is open, so a menu that
+   opened over a different row cannot be read as belonging to the selected
+   one. */
+.item.ctx-on{background:var(--sel)}
+
 /* The backup block sits in the footer, laid out along it rather than down the
    sidebar. The dial shows how far through the wait for the next backup you
    are, so an overdue vault reads at a glance. */
@@ -741,13 +764,17 @@ sits in the history (Ctrl/⌘-G)" aria-pressed="false">Clients</button>
   </div>
 </div></div>
 
+<!-- The tree's context menu. One element, emptied and refilled every time it
+     opens, because what belongs on it depends on what was right-clicked. -->
+<div id="ctx" role="menu" hidden></div>
+
 <div id="veil"><div id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
   <h2 id="dlgTitle">New note</h2>
   <p id="dlgHint">Creates a markdown file with frontmatter already filled in.</p>
   <div id="dlgBody">
     <label id="dlgFolderLabel">Folder</label>
     <div class="sel" id="dlgFolder"></div>
-    <label for="dlgName">Title</label>
+    <label for="dlgName" id="dlgNameLabel">Title</label>
     <input id="dlgName" placeholder="Note title" autocomplete="off">
   </div>
   <div id="dlgErr"></div>
@@ -2977,6 +3004,51 @@ async function pull(e){
   }
 }
 
+/* A rename or a folder move repoints [[wikilinks]] in notes this browser did
+   not open — and one of them can be the note in the editor, whose textarea is
+   then holding bytes the vault does not have any more.
+
+   onLive() will not do this one: it skips a commit whose head is already ours,
+   and this browser is the one that made this commit. So it is done here, with
+   the same merge and the same rule as a commit arriving from another device
+   (invariant 8) — a buffer with nothing unsaved takes the new text, one with
+   unsaved work is rebased onto it, and a hunk both sides changed opens the
+   same dialog rather than picking a side. What differs is only what the
+   person is told, because "another device saved this note" would be a lie. */
+async function pullRelinked(r, base){
+  if (!current || !(r.relinked || []).includes(current.path)) return;
+  if (!dirty){
+    try {
+      const got = await api("/api/history/show?sha=" + encodeURIComponent(r.head)
+                          + "&path=" + encodeURIComponent(current.path));
+      spliceText(got.content);
+      current.raw = got.content;
+      afterPull("links in this note were repointed", false);
+    } catch (e){ refreshStatus(); }
+    return;
+  }
+  try {
+    const got = await api("/api/rebase", {method: "POST", body: JSON.stringify(
+      {path: current.path, content: edEl.value, base: base})});
+    if (got.merged){
+      spliceText(got.content);
+      afterPull("repointed links merged into your unsaved text", true);
+    }
+  } catch (e){
+    if (e.status === 409 && e.detail && e.detail.conflict){
+      setStatus("the repointed links clash with your unsaved text — pick a side",
+                "error");
+      return openConflict(e.detail.conflict, [
+        "The links in this note were repointed",
+        "Renaming moved something this note links to, so its links were "
+        + "rewritten in the vault — and you have unsaved text in the same "
+        + "lines. Nothing has been written. Pick a side for each one — or "
+        + "edit the result directly — and save."]);
+    }
+    refreshStatus();
+  }
+}
+
 function afterPull(what, keepDirty){
   preview();
   drawStats();
@@ -3157,8 +3229,18 @@ $("histTab").addEventListener("click", () => histTab(true));
 
 let CONFLICT = null;
 
-function openConflict(c){
+/* What the dialog says when a save lost the race, which is what it is for
+   nearly always. Read out of the markup so the two cannot drift apart. */
+const CONFLICT_WORDS = [$("cTitle").textContent, $("cHint").textContent];
+
+/* `words` is [heading, explanation], for the one caller whose clash is not
+   the usual one: a browser that repointed links in a note it had open is not
+   "another device", and saying so would send the reader looking for a device
+   that does not exist. */
+function openConflict(c, words){
   CONFLICT = c;
+  $("cTitle").textContent = (words || CONFLICT_WORDS)[0];
+  $("cHint").textContent = (words || CONFLICT_WORDS)[1];
   const body = $("cbody");
   body.innerHTML = "";
   let n = 0;
@@ -3285,26 +3367,242 @@ $("cSave").addEventListener("click", async () => {
   await save();
 });
 
-/* ---------------------------- dialog ---------------------------- */
-/* One dialog, two jobs: a new note and a rename ask for exactly the same two
-   things, a folder and a name. MODE says which, and nothing else differs. */
-const folderSel = makeSelect($("dlgFolder"), "Folder");
-let DLG_MODE = "new";
+/* ----------------------- the tree's context menu -----------------------
+   The one place cairn takes the browser's own menu away, and it does it
+   because the alternative is what the toolbar already is: buttons that can
+   only ever act on the note that happens to be open. A file tree's actions
+   belong on the row they are about.
 
-function openDialog(mode){
-  DLG_MODE = mode === "rename" ? "rename" : "new";
-  if (DLG_MODE === "rename" && !current) return;
-  const folders = [...new Set(NOTES.map(n => n.folder))].sort();
-  folderSel.set(folders.map(f => [f, f === "(root)" ? "Vault root" : f]),
-                current ? current.folder : null);
-  const renaming = DLG_MODE === "rename";
-  $("dlgTitle").textContent = renaming ? "Rename note" : "New note";
-  $("dlgHint").textContent = renaming
-    ? "Moves the file and repoints every [[wikilink]] that names it — one commit for all of it."
-    : "Creates a markdown file with frontmatter already filled in.";
-  $("dlgOk").textContent = renaming ? "Rename" : "Create";
-  $("dlgName").value = renaming
-    ? current.path.split("/").pop().replace(/\.md$/, "") : "";
+   Built from a list every time it opens rather than living in the HTML,
+   because what belongs on it depends on what was clicked — a note, a folder,
+   or the empty space under them. It is positioned in the viewport, not inside
+   the sidebar: #list scrolls and clips its contents, so a menu parented there
+   would be cut off by the very row that opened it.                         */
+
+let CTX_ROW = null;        /* the row the open menu is about */
+let CTX_BACK = null;       /* what had focus before it opened */
+
+function closeMenu(restore){
+  const m = $("ctx");
+  if (m.hidden) return;
+  m.hidden = true;
+  m.innerHTML = "";
+  if (CTX_ROW) CTX_ROW.classList.remove("ctx-on");
+  const back = CTX_BACK;
+  CTX_ROW = CTX_BACK = null;
+  /* Only for a menu dismissed from the keyboard. Putting focus back after a
+     click would drag it away from whatever the action just opened. */
+  if (restore && back && document.contains(back)) back.focus();
+}
+
+function openMenu(x, y, items, row){
+  closeMenu(false);
+  const m = $("ctx");
+  CTX_ROW = row || null;
+  CTX_BACK = document.activeElement;
+  if (CTX_ROW) CTX_ROW.classList.add("ctx-on");
+  for (const it of items){
+    if (it === "-"){
+      const s = document.createElement("div");
+      s.className = "msep";
+      m.appendChild(s);
+      continue;
+    }
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "mi" + (it.danger ? " danger" : "");
+    b.setAttribute("role", "menuitem");
+    b.disabled = !!it.disabled;
+    b.appendChild(document.createTextNode(it.label));
+    if (it.hint){
+      const k = document.createElement("span");
+      k.className = "k";
+      k.textContent = it.hint;
+      b.appendChild(k);
+    }
+    /* Shut before the action runs: several of these open a dialog or move
+       focus into the editor, and a menu still on screen over either is
+       something the person has to dismiss before they can carry on. */
+    b.addEventListener("click", () => { closeMenu(false); it.run(); });
+    m.appendChild(b);
+  }
+  /* Drawn at the corner it was asked for, then nudged back inside the
+     window. A row near the right edge or near the bottom is exactly where a
+     tree's menu gets opened, and half a menu is no menu. */
+  m.hidden = false;
+  m.style.left = m.style.top = "0px";
+  const w = m.offsetWidth, h = m.offsetHeight, pad = 8;
+  m.style.left = clamp(x, pad, Math.max(pad, innerWidth - w - pad)) + "px";
+  m.style.top = (y + h + pad > innerHeight ? Math.max(pad, y - h) : y) + "px";
+  const first = m.querySelector(".mi:not(:disabled)");
+  if (first) first.focus();
+}
+
+function noteMenu(path){
+  const note = NOTES.find(n => n.path === path);
+  if (!note) return [];
+  const stem = path.split("/").pop().replace(/\.md$/, "");
+  return [
+    {label: "Open", run: () => open_(path)},
+    {label: "Open in a new tab", run: () => window.open(noteHref(path), "_blank")},
+    "-",
+    {label: "Rename or move…", run: () => openDialog("rename", path)},
+    {label: "Duplicate", run: () => duplicateNote(path)},
+    "-",
+    {label: "Copy [[link]]", run: () => copied("[[" + stem + "]]", "wikilink copied")},
+    {label: "Copy path", run: () => copied(path, "path copied")},
+    "-",
+    {label: "Move to trash", danger: true, run: () => trashNote(path)}
+  ];
+}
+
+function folderMenu(dir){
+  const inside = NOTES.filter(n => n.path.startsWith(dir + "/")).length;
+  return [
+    {label: "New note here…", run: () => openDialog("new", dir)},
+    "-",
+    {label: SHUT.has(dir) ? "Expand" : "Collapse", run: () => toggleFold(dir)},
+    {label: "Rename or move…", run: () => openDialog("folder", dir)},
+    {label: "Copy path", run: () => copied(dir, "path copied")},
+    "-",
+    {label: "Move to trash", danger: true,
+     hint: inside + (inside === 1 ? " note" : " notes"),
+     run: () => trashFolder(dir)}
+  ];
+}
+
+/* The empty space under the tree is still part of the tree, and a right-click
+   there is someone asking for the things that are not about any one row. */
+function treeMenu(){
+  return [
+    {label: "New note…", run: () => openDialog("new")},
+    "-",
+    {label: "Collapse all", disabled: !allFolders().size, run: () => foldAll(true)},
+    {label: "Expand all", disabled: !SHUT.size, run: () => foldAll(false)}
+  ];
+}
+
+function menuFor(row){
+  if (!row) return treeMenu();
+  return row.dataset.fold ? folderMenu(row.dataset.fold) : noteMenu(row.dataset.open);
+}
+
+async function copied(text, said){
+  try { await copyText(text); setStatus(said, "saved"); }
+  catch (e){ setStatus(e.message, "error"); }
+}
+
+function toggleFold(dir){
+  if (SHUT.has(dir)) SHUT.delete(dir); else SHUT.add(dir);
+  rememberShut();
+  drawList(qEl.value);
+}
+
+listEl.addEventListener("contextmenu", e => {
+  const items = menuFor(e.target.closest(".item"));
+  if (!items.length) return;                  /* a row whose note has gone */
+  e.preventDefault();
+  openMenu(e.clientX, e.clientY, items, e.target.closest(".item"));
+});
+
+$("ctx").addEventListener("keydown", e => {
+  if (e.key === "Escape" || e.key === "Tab"){
+    e.preventDefault();
+    return closeMenu(true);
+  }
+  const items = [...$("ctx").querySelectorAll(".mi:not(:disabled)")];
+  if (!items.length) return;
+  const at = items.indexOf(document.activeElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp"){
+    e.preventDefault();
+    const step = e.key === "ArrowDown" ? 1 : items.length - 1;
+    items[(Math.max(at, 0) + step) % items.length].focus();
+  } else if (e.key === "Home" || e.key === "End"){
+    e.preventDefault();
+    items[e.key === "Home" ? 0 : items.length - 1].focus();
+  }
+  /* Enter and Space are the button's own; nothing to add. */
+});
+
+/* Everything that means "you are looking somewhere else now". The pointer one
+   captures, so it runs before a click on whatever is underneath. */
+addEventListener("pointerdown", e => {
+  if (!$("ctx").hidden && !(e.target.closest && e.target.closest("#ctx")))
+    closeMenu(false);
+}, true);
+addEventListener("resize", () => closeMenu(false));
+addEventListener("blur", () => closeMenu(false));
+listEl.addEventListener("scroll", () => closeMenu(false), {passive: true});
+
+/* ---------------------------- dialog ----------------------------
+   One dialog, three jobs, because all three ask for exactly the same two
+   things: a place and a name. A new note, a note being renamed or moved, and
+   a folder being renamed or moved. DLG_MODE says which.
+
+   DLG_PATH says what it is about, and it is no longer "whatever is open": the
+   tree's context menu names the row it was opened on, which is very often not
+   the note in the editor. The toolbar buttons pass nothing and still mean the
+   open note, so they behave exactly as they did. */
+const folderSel = makeSelect($("dlgFolder"), "Folder");
+let DLG_MODE = "new", DLG_PATH = null;
+
+const dlgFolderOf = path => path.split("/").slice(0, -1).join("/") || "(root)";
+
+/* Every folder a note can be put in, which is every folder some note is
+   already in, plus the root. Derived from the notes exactly as the tree is:
+   a folder with nothing in it is not a folder cairn has. */
+function folderChoices(){
+  return ["(root)", ...[...allFolders()].sort()]
+    .map(f => [f, f === "(root)" ? "Vault root" : f]);
+}
+
+/* Where a folder could go: anywhere but inside itself. The server refuses
+   both that and a move into one of its own children, and offering a choice
+   whose only outcome is an error is worse than not offering it. */
+function parentChoices(dir){
+  return folderChoices().filter(([f]) => f !== dir && !(f + "/").startsWith(dir + "/"));
+}
+
+const DLG_WORDS = {
+  new: ["New note",
+        "Creates a markdown file with frontmatter already filled in.",
+        "Create", "Folder", "Title", "Note title"],
+  rename: ["Rename or move note",
+           "Moves the file and repoints every [[wikilink]] that names it — one "
+           + "commit for all of it.",
+           "Rename", "Folder", "Title", "Note title"],
+  folder: ["Rename or move folder",
+           "Moves the whole folder — notes, attachments and all — and repoints the "
+           + "[[wikilinks]] that named what moved. One commit for all of it.",
+           "Move", "Inside", "Name", "Folder name"]
+};
+
+function openDialog(mode, target){
+  DLG_MODE = DLG_WORDS[mode] ? mode : "new";
+  const folder = DLG_MODE === "folder";
+  let path = target || null;
+  if (DLG_MODE === "rename"){
+    path = path || (current && current.path);
+    if (!path || !NOTES.some(n => n.path === path)) return;
+  }
+  if (folder && (!path || !allFolders().has(path))) return;
+  DLG_PATH = DLG_MODE === "new" ? null : path;
+
+  const at = folder ? dlgFolderOf(path)
+           : DLG_MODE === "rename" ? dlgFolderOf(path)
+           : (target || (current ? current.folder : null));
+  folderSel.set(folder ? parentChoices(path) : folderChoices(), at);
+
+  const w = DLG_WORDS[DLG_MODE];
+  $("dlgTitle").textContent = w[0];
+  $("dlgHint").textContent = w[1];
+  $("dlgOk").textContent = w[2];
+  $("dlgFolderLabel").textContent = w[3];
+  $("dlgNameLabel").textContent = w[4];
+  $("dlgName").placeholder = w[5];
+  $("dlgName").value = DLG_MODE === "new" ? ""
+    : folder ? path.split("/").pop()
+    : path.split("/").pop().replace(/\.md$/, "");
   $("dlgErr").textContent = "";
   $("veil").classList.add("open");
   $("dlgName").focus();
@@ -3313,49 +3611,111 @@ function openDialog(mode){
 
 /* The path the dialog is describing, or null with the reason shown. */
 function dialogPath(){
+  const folder = DLG_MODE === "folder";
+  const what = folder ? "name" : "title";
   const name = $("dlgName").value.trim();
-  if (!name){ $("dlgErr").textContent = "Give it a title."; return null; }
+  if (!name){ $("dlgErr").textContent = "Give it a " + what + "."; return null; }
   if (/[\/\\:*?"<>|]/.test(name)){
-    $("dlgErr").textContent = 'Avoid / \\ : * ? " < > | in the title.';
+    $("dlgErr").textContent = 'Avoid / \\ : * ? " < > | in the ' + what + ".";
     return null;
   }
-  const folder = folderSel.value;
-  return (folder === "(root)" ? "" : folder + "/") + name + ".md";
+  const at = folderSel.value;
+  return (at === "(root)" ? "" : at + "/") + name + (folder ? "" : ".md");
 }
 
 function submitDialog(){
-  return DLG_MODE === "rename" ? renameNote() : createNote();
+  return DLG_MODE === "rename" ? renameNote()
+       : DLG_MODE === "folder" ? moveFolder()
+       : createNote();
+}
+
+/* A failed dialog says so in the dialog, beside the field that caused it,
+   rather than in the status line behind a modal nobody can see past. */
+function dialogFailed(e){
+  $("dlgErr").textContent = e.detail && e.detail.refused
+    ? e.message + " — " + e.detail.refused.split("\n")[0]
+    : e.message;
 }
 
 async function renameNote(){
-  const path = dialogPath();
-  if (!path || !current) return;
-  if (path === current.path){ closeDialog(); return; }
-  /* The note is reopened from disk afterwards, so anything in the textarea
-     that was never saved would go with the old name. */
-  if (dirty && !confirm("Renaming reopens the note from disk.\n\n"
-                      + "You have unsaved changes. Discard them?")) return;
-  const was = current.path;
+  const path = dialogPath(), was = DLG_PATH;
+  if (!path || !was) return;
+  if (path === was){ closeDialog(); return; }
+  /* Only the note in the editor has unsaved text to lose: it is reopened from
+     disk afterwards, so anything never saved would go with the old name.
+     Renaming some other row of the tree touches nothing anyone is typing in. */
+  const held = current && current.path === was;
+  if (held && dirty && !confirm("Renaming reopens the note from disk.\n\n"
+                              + "You have unsaved changes. Discard them?")) return;
+  const base = HEAD;              /* what the textarea's copy came from */
   try{
     const r = await api("/api/rename", {method: "POST",
       body: JSON.stringify({path: was, to: path})});
     HEAD = r.head || HEAD;
     closeDialog();
-    current = null; dirty = false;      /* the note it points at is gone */
+    if (held){ current = null; dirty = false; }   /* what it points at is gone */
     await reload();
-    open_(r.path, "replace");
-    HIST_FOR = null;
-    if (onHist()) loadHistory(true);
+    if (held){
+      open_(r.path, "replace");
+      HIST_FOR = null;
+      if (onHist()) loadHistory(true);
+    }
+    refreshStatus();
     setStatus(r.relinked.length
       ? "renamed · " + r.relinked.length + " note" + (r.relinked.length === 1 ? "" : "s")
         + " relinked"
       : "renamed · committed", "saved");
-  } catch (e){
-    $("dlgErr").textContent = e.detail && e.detail.refused
-      ? e.message + " — " + e.detail.refused.split("\n")[0]
-      : e.message;
-  }
+    /* Last, so a clash it turns up has the last word in the status line: the
+       rename did succeed, and that is the smaller of the two things to say. */
+    if (!held) await pullRelinked(r, base);
+  } catch (e){ dialogFailed(e); }
 }
+
+async function moveFolder(){
+  const to = dialogPath(), was = DLG_PATH;
+  if (!to || !was) return;
+  if (to === was){ closeDialog(); return; }
+  /* The open note may be one of the ones about to move, and it is reopened at
+     its new path afterwards — so unsaved text in it would be left behind. */
+  const held = current && current.path.startsWith(was + "/");
+  if (held && dirty && !confirm("Moving this folder reopens the note you have "
+                              + "open from its new path.\n\n"
+                              + "You have unsaved changes. Discard them?")) return;
+  const heldPath = held ? current.path : null;
+  const base = HEAD;              /* what the textarea's copy came from */
+  try{
+    const r = await api("/api/folder/rename", {method: "POST",
+      body: JSON.stringify({path: was, to: to})});
+    HEAD = r.head || HEAD;
+    closeDialog();
+    if (held){ current = null; dirty = false; }
+    /* The folders below the one that moved are remembered by path, and every
+       one of those paths has just changed. Carrying the memory across keeps a
+       folder that was shut before the move shut after it. */
+    let shifted = false;
+    for (const d of [...SHUT]){
+      if (d !== was && !(d + "/").startsWith(was + "/")) continue;
+      SHUT.delete(d);
+      SHUT.add(to + d.slice(was.length));
+      shifted = true;
+    }
+    if (shifted) rememberShut();
+    await reload();
+    if (heldPath && r.moved[heldPath]){
+      reveal(r.moved[heldPath]);
+      open_(r.moved[heldPath], "replace");
+      HIST_FOR = null;
+      if (onHist()) loadHistory(true);
+    }
+    refreshStatus();
+    setStatus("moved " + r.notes + (r.notes === 1 ? " note" : " notes")
+      + (r.relinked.length ? " · " + r.relinked.length + " relinked" : " · committed"),
+      "saved");
+    /* Last, for renameNote()'s reason: a clash has more to say than the move. */
+    if (!heldPath || !r.moved[heldPath]) await pullRelinked(r, base);
+  } catch (e){ dialogFailed(e); }
+}
+
 function closeDialog(){ folderSel.close(); $("veil").classList.remove("open"); }
 const dlgOpen = () => $("veil").classList.contains("open");
 
@@ -3367,35 +3727,97 @@ async function createNote(){
     const r = await api("/api/new", {method: "POST", body: JSON.stringify({path, title})});
     await reload();
     closeDialog();
+    refreshStatus();
+    reveal(r.path);
     open_(r.path);
     edEl.focus();
     edEl.setSelectionRange(edEl.value.length, edEl.value.length);
+  } catch (e){ dialogFailed(e); }
+}
+
+/* A copy of a note, in one commit rather than an empty note and then a save:
+   the text goes with the request, so the vault never holds a half-made
+   duplicate and the hook sees the real thing once. The name is "<title> copy",
+   counting up only as far as it has to. */
+async function duplicateNote(path){
+  const note = NOTES.find(n => n.path === path);
+  if (!note) return;
+  const folder = dlgFolderOf(path), stem = path.split("/").pop().replace(/\.md$/, "");
+  const at = n => (folder === "(root)" ? "" : folder + "/")
+               + stem + " copy" + (n > 1 ? " " + n : "") + ".md";
+  let n = 1;
+  while (NOTES.some(x => x.path === at(n))) n++;
+  const to = at(n);
+  try{
+    const r = await api("/api/new", {method: "POST", body: JSON.stringify(
+      {path: to, title: to.split("/").pop().replace(/\.md$/, ""), content: note.raw})});
+    await reload();
+    refreshStatus();
+    reveal(r.path);
+    open_(r.path);
+    setStatus("duplicated · committed", "saved");
   } catch (e){
-    $("dlgErr").textContent = e.detail && e.detail.refused
-      ? e.message + " — " + e.detail.refused.split("\n")[0]
-      : e.message;
+    setStatus(e.detail && e.detail.refused
+      ? e.message + " — " + e.detail.refused.split("\n")[0] : e.message, "error");
   }
 }
 
-async function trashNote(){
-  if (!current) return;
-  if (!confirm('Move "' + current.title + '" to .trash/?\n\nThe file is moved, not deleted — '
+/* The editor with nothing in it. Used when what was open has just been
+   trashed — on its own or inside a folder — so the textarea cannot go on
+   showing a note the vault does not have any more. */
+function clearEditor(){
+  current = null; dirty = false;
+  edEl.value = ""; dropSurfacesIn(viewEl); viewEl.innerHTML = "";
+  crumbEl.textContent = ""; $("stats").textContent = "";
+  $("trashBtn").disabled = true;
+  $("renameBtn").disabled = true;
+  mapS.paint();
+  document.title = "cairn";
+  history.replaceState({}, "", "/");
+}
+
+async function trashNote(path){
+  const note = NOTES.find(n => n.path === (path || (current && current.path)));
+  if (!note) return;
+  if (!confirm('Move "' + note.title + '" to .trash/?\n\nThe file is moved, not deleted — '
              + "you can pull it back out of that folder.")) return;
+  const held = current && current.path === note.path;
   try{
-    const r = await api("/api/trash", {method: "POST", body: JSON.stringify({path: current.path})});
-    current = null; dirty = false;
-    edEl.value = ""; dropSurfacesIn(viewEl); viewEl.innerHTML = "";
-    crumbEl.textContent = ""; $("stats").textContent = "";
+    const r = await api("/api/trash", {method: "POST", body: JSON.stringify({path: note.path})});
+    if (held) clearEditor();
     await reload();
+    refreshStatus();
     setStatus(r.uncommitted ? "moved to trash, but the removal was not committed"
                             : "moved to trash · committed",
               r.uncommitted ? "error" : "saved");
-    $("trashBtn").disabled = true;
-    $("renameBtn").disabled = true;
-    mapS.paint();
-    document.title = "cairn";
-    history.replaceState({}, "", "/");
-    if (NOTES.length) open_(NOTES[0].path, "replace");
+    if (held && NOTES.length) open_(NOTES[0].path, "replace");
+  } catch (e){ setStatus(e.message, "error"); }
+}
+
+/* Trashing a folder is trashing everything in it, so the count is in the
+   question rather than only in the answer — "9 notes" is the difference
+   between a click someone meant and one they did not. */
+async function trashFolder(dir){
+  const inside = NOTES.filter(n => n.path.startsWith(dir + "/"));
+  if (!inside.length) return;
+  if (!confirm('Move "' + dir + '" to .trash/?\n\n' + inside.length
+             + (inside.length === 1 ? " note goes" : " notes go") + " with it, along "
+             + "with anything else in the folder. It is moved, not deleted — you "
+             + "can pull it back out of that folder.")) return;
+  const held = current && current.path.startsWith(dir + "/");
+  try{
+    const r = await api("/api/folder/trash", {method: "POST",
+      body: JSON.stringify({path: dir})});
+    if (held) clearEditor();
+    if (SHUT.delete(dir)) rememberShut();
+    await reload();
+    refreshStatus();
+    setStatus(r.uncommitted
+      ? "folder moved to trash, but the removal was not committed"
+      : "folder moved to trash · " + r.notes
+        + (r.notes === 1 ? " note" : " notes") + " · committed",
+      r.uncommitted ? "error" : "saved");
+    if (held && NOTES.length) open_(NOTES[0].path, "replace");
   } catch (e){ setStatus(e.message, "error"); }
 }
 
@@ -4153,12 +4575,7 @@ $("expandAll").addEventListener("click", () => foldAll(false));
 
 listEl.addEventListener("click", e => {
   const f = e.target.closest("[data-fold]");
-  if (f){
-    if (SHUT.has(f.dataset.fold)) SHUT.delete(f.dataset.fold);
-    else SHUT.add(f.dataset.fold);
-    rememberShut();
-    return drawList(qEl.value);
-  }
+  if (f) return toggleFold(f.dataset.fold);
   const b = e.target.closest("[data-open]");
   if (b && plainClick(e)){ e.preventDefault(); open_(b.dataset.open); }
 });
@@ -4176,6 +4593,18 @@ $("outBody").addEventListener("click", e => {
 $("viewWrap").addEventListener("scroll", spy, {passive: true});
 $("liveWrap").addEventListener("scroll", spy, {passive: true});
 listEl.addEventListener("keydown", e => {
+  /* The menu key and Shift-F10, which is how a context menu is opened without
+     a mouse. Anchored to the row rather than to the pointer, because there is
+     no pointer. */
+  if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)){
+    const row = document.activeElement && document.activeElement.closest(".item");
+    if (!row) return;
+    const items = menuFor(row);
+    if (!items.length) return;
+    e.preventDefault();
+    const at = row.getBoundingClientRect();
+    return openMenu(at.left + 20, at.bottom, items, row);
+  }
   if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
   const items = [...listEl.querySelectorAll(".item")];
   const at = items.indexOf(document.activeElement);
@@ -4260,7 +4689,7 @@ setInterval(drawFoot, 30 * 1000);
 setInterval(refreshStatus, 20 * 1000);
 $("newBtn").addEventListener("click", () => openDialog("new"));
 $("renameBtn").addEventListener("click", () => openDialog("rename"));
-$("trashBtn").addEventListener("click", trashNote);
+$("trashBtn").addEventListener("click", () => trashNote());
 $("dlgCancel").addEventListener("click", closeDialog);
 $("dlgOk").addEventListener("click", submitDialog);
 $("dlgName").addEventListener("keydown", e => { if (e.key === "Enter") submitDialog(); });
@@ -4271,6 +4700,9 @@ document.addEventListener("keydown", e => {
   /* A decision is pending and nothing has been written: Ctrl-S here would
      just hit the same conflict again. */
   if ($("cveil").classList.contains("open")) return;
+  /* An open context menu owns the keyboard. It has arrow keys and an Escape
+     of its own, and every shortcut below would otherwise fire underneath it. */
+  if (!$("ctx").hidden) return;
   if ((e.ctrlKey || e.metaKey) && e.key === "s"){ e.preventDefault(); save(); }
   if ((e.ctrlKey || e.metaKey) && e.key === "n"){ e.preventDefault(); openDialog("new"); }
   if ((e.ctrlKey || e.metaKey) && e.key === "\\"){

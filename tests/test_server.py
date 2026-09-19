@@ -1498,6 +1498,214 @@ def test_rename(vault, port):
         os.remove(hook)
 
 
+def test_folders(vault, port):
+    """Folders: moving one takes everything in it, trashing one takes
+    everything in it, and both are one commit."""
+    print("\nfolders")
+
+    if not shutil.which("git"):
+        check("git is installed to test against", False, "skipped")
+        return
+
+    base = "http://127.0.0.1:%d" % port
+    readme = os.path.join(vault, "README.md")
+    was_readme = open(readme, encoding="utf-8").read()
+    hdr = {"Content-Type": "application/json"}
+    post = lambda op, route, body: call(op, base + route,
+                                        data=json.dumps(body).encode(),
+                                        method="POST", headers=hdr)
+
+    p, token, _ = start(vault, port)
+    try:
+        op, _ = client()
+        form(op, base, token)
+
+        # A folder with two notes and an attachment in it, and a note outside
+        # that links into it both ways a wikilink can.
+        for name in ("Sleep", "Diet"):
+            s_, _ = post(op, "/api/new", {"path": "Areas/Health/%s.md" % name,
+                                          "title": name})
+            check("a note can be made in a new folder (%s)" % name, s_ == 200, s_)
+        with open(os.path.join(vault, "Areas", "Health", "chart.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n not really a png")
+        with open(readme, "a") as f:
+            f.write("\nSee [[Areas/Health/Sleep]] and [[Sleep]] and "
+                    "[[Areas/Health/Missing]].\n")
+        notes_of(op, base)                    # adopt both, so the tree is clean
+
+        # --- a folder move needs the token --------------------------------
+        locked, _ = client()
+        s_, _ = post(locked, "/api/folder/rename", {"path": "Areas/Health",
+                                                    "to": "Archives/Health"})
+        check("a folder move without the token is refused", s_ == 403, s_)
+        check("and moved nothing",
+              os.path.isdir(os.path.join(vault, "Areas", "Health")))
+        s_, _ = post(locked, "/api/folder/trash", {"path": "Areas/Health"})
+        check("so is trashing a folder", s_ == 403, s_)
+
+        # --- and it stays inside the vault, on a folder the tree can show --
+        for bad, why in ((".git", "the git directory"),
+                         ("node_modules", "a skipped directory"),
+                         ("../escape", "a path outside the vault"),
+                         ("", "the vault root itself")):
+            s_, _ = post(op, "/api/folder/rename", {"path": "Areas/Health",
+                                                    "to": bad})
+            check("%s is refused as a destination" % why, s_ == 400, (bad, s_))
+            s_, _ = post(op, "/api/folder/trash", {"path": bad})
+            check("and cannot be trashed", s_ in (400, 409), (bad, s_))
+        check("none of that moved anything",
+              os.path.isdir(os.path.join(vault, "Areas", "Health"))
+              and os.path.isdir(os.path.join(vault, ".git")))
+        check("or escaped the vault",
+              not os.path.exists(os.path.join(os.path.dirname(vault), "escape")))
+
+        s_, _ = post(op, "/api/folder/rename", {"path": "Areas/Health",
+                                                "to": "Areas/Health/Inner"})
+        check("a folder cannot be moved inside itself", s_ == 409, s_)
+        s_, _ = post(op, "/api/folder/rename", {"path": "Areas/Health",
+                                                "to": "Notes"})
+        check("nor onto a folder that is already there", s_ == 409, s_)
+
+        # --- the move itself ----------------------------------------------
+        before = int(git(vault, "rev-list", "--count", "HEAD"))
+        s_, b = post(op, "/api/folder/rename", {"path": "Areas/Health",
+                                                "to": "Archives/Health"})
+        r = json.loads(b)
+        check("a folder move answers", s_ == 200, (s_, b[:120]))
+        check("the notes moved with it",
+              os.path.isfile(os.path.join(vault, "Archives", "Health", "Sleep.md"))
+              and not os.path.exists(os.path.join(vault, "Areas")))
+        check("and so did the attachment beside them",
+              os.path.isfile(os.path.join(vault, "Archives", "Health", "chart.png")))
+        check("in exactly one commit",
+              int(git(vault, "rev-list", "--count", "HEAD")) == before + 1,
+              int(git(vault, "rev-list", "--count", "HEAD")) - before)
+        check("which git records as renames",
+              "R" in git(vault, "show", "--name-status", "--format=", "HEAD"),
+              git(vault, "show", "--name-status", "--format=", "HEAD")[:160])
+        check("the commit names the folder, not one of its notes",
+              git(vault, "log", "-1", "--format=%s") == "Move Health",
+              git(vault, "log", "-1", "--format=%s"))
+        check("and says where it came from",
+              "moved Areas/Health to Archives/Health"
+              in git(vault, "log", "-1", "--format=%b"),
+              git(vault, "log", "-1", "--format=%b"))
+        check("the answer says how many notes went", r["notes"] == 2, r.get("notes"))
+        check("and where each of them went",
+              r["moved"]["Areas/Health/Sleep.md"] == "Archives/Health/Sleep.md",
+              r.get("moved"))
+
+        text = open(readme, encoding="utf-8").read()
+        check("a link by path follows the folder",
+              "[[Archives/Health/Sleep]]" in text, text[-200:])
+        check("a link by filename is left exactly as it was",
+              "[[Sleep]]" in text, text[-200:])
+        check("and so is one naming a note that was never there",
+              "[[Areas/Health/Missing]]" in text, text[-200:])
+        check("the move says which notes it relinked",
+              r["relinked"] == ["README.md"], r.get("relinked"))
+        check("the tree is clean after it",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+
+        h = json.loads(call(op, base + "/api/history?path=Archives/Health/Sleep.md")[1])
+        check("history follows a note through the folder move",
+              any(v["subject"] == "Add Sleep" for v in h["versions"]),
+              [v["subject"] for v in h["versions"]][:5])
+
+        # --- duplicating a note is one commit, not an empty note and a save -
+        before = int(git(vault, "rev-list", "--count", "HEAD"))
+        s_, b = post(op, "/api/new", {"path": "Archives/Health/Sleep copy.md",
+                                      "title": "Sleep copy",
+                                      "content": open(os.path.join(
+                                          vault, "Archives", "Health", "Sleep.md"),
+                                          encoding="utf-8").read()})
+        check("a duplicate answers", s_ == 200, (s_, b[:120]))
+        check("in exactly one commit",
+              int(git(vault, "rev-list", "--count", "HEAD")) == before + 1)
+        copy = open(os.path.join(vault, "Archives", "Health", "Sleep copy.md"),
+                    encoding="utf-8").read()
+        check("with the original's body",
+              "# Sleep" in copy, copy[:120])
+        check("and a frontmatter title matching its own filename",
+              "title: Sleep copy" in copy, copy[:120])
+
+        # --- trashing the folder -------------------------------------------
+        before = int(git(vault, "rev-list", "--count", "HEAD"))
+        s_, b = post(op, "/api/folder/trash", {"path": "Archives/Health"})
+        r = json.loads(b)
+        check("trashing a folder answers", s_ == 200, (s_, b[:120]))
+        check("the folder is gone from the vault",
+              not os.path.exists(os.path.join(vault, "Archives")))
+        check("and the notes are in the trash, not deleted",
+              os.path.isfile(os.path.join(r["trashed"], "Sleep.md")), r["trashed"])
+        check("with the attachment that was beside them",
+              os.path.isfile(os.path.join(r["trashed"], "chart.png")))
+        check("outside the vault", outside(r["trashed"], vault), r["trashed"])
+        check("the removal is one commit",
+              int(git(vault, "rev-list", "--count", "HEAD")) == before + 1,
+              int(git(vault, "rev-list", "--count", "HEAD")) - before)
+        check("naming the folder and what was in it",
+              git(vault, "log", "-1", "--format=%s") == "Delete Health"
+              and "3 notes" in git(vault, "log", "-1", "--format=%b"),
+              (git(vault, "log", "-1", "--format=%s"),
+               git(vault, "log", "-1", "--format=%b")))
+        check("it says so too", r["notes"] == 3 and not r["uncommitted"], r)
+        check("and the tree is clean",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+        check("a folder that is not there cannot be trashed",
+              post(op, "/api/folder/trash", {"path": "Archives/Health"})[0] == 400)
+    finally:
+        p.terminate(); p.wait(timeout=5)
+
+    # --- a folder move the hook refuses leaves nothing behind --------------
+    hook = os.path.join(vault, ".git", "hooks", "pre-commit")
+    with open(hook, "w") as f:
+        f.write("#!/bin/sh\nexit 1\n")
+    os.chmod(hook, 0o755)
+    p, token, _ = start(vault, port)
+    try:
+        op, _ = client()
+        form(op, base, token)
+        # The hook is armed, so this folder has to be built without one.
+        os.makedirs(os.path.join(vault, "Areas", "Health"))
+        with open(os.path.join(vault, "Areas", "Health", "Sleep.md"), "w") as f:
+            f.write("---\ntitle: Sleep\n---\n\n# Sleep\n")
+        git(vault, "add", "-A")
+        git(vault, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "Fixture")
+        with open(readme, "a") as f:
+            f.write("\nAnd [[Areas/Health/Sleep]].\n")
+        git(vault, "add", "-A")
+        git(vault, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "Fixture links")
+
+        head = git(vault, "rev-parse", "HEAD")
+        links = open(readme, encoding="utf-8").read()
+        s_, _ = post(op, "/api/folder/rename", {"path": "Areas/Health",
+                                                "to": "Archives/Health"})
+        check("a refused folder move answers 422", s_ == 422, s_)
+        check("the folder is still where it was",
+              os.path.isfile(os.path.join(vault, "Areas", "Health", "Sleep.md"))
+              and not os.path.exists(os.path.join(vault, "Archives")))
+        check("the links are back the way they were",
+              open(readme, encoding="utf-8").read() == links)
+        check("no commit was made", git(vault, "rev-parse", "HEAD") == head)
+        check("and nothing is left staged or dirty",
+              git(vault, "status", "--porcelain") == "",
+              git(vault, "status", "--porcelain"))
+    finally:
+        p.terminate(); p.wait(timeout=5)
+        os.remove(hook)
+        # Put the vault back the way this test found it: the tests after it
+        # read the note list and the footer, and a folder of fixtures in the
+        # middle of them is noise they would have to know about.
+        shutil.rmtree(os.path.join(vault, "Areas"), ignore_errors=True)
+        with open(readme, "w") as f:
+            f.write(was_readme)
+        git(vault, "add", "-A")
+        git(vault, "commit", "-q", "-m", "Clear the folder fixtures")
+
+
 def test_backup(vault, port):
     """Backups: a zip and a bundle written somewhere else, and the drift
     between the last one and now."""
@@ -2389,6 +2597,7 @@ def main():
         test_outside(vault, 8942)
         test_agent(vault, 8943)
         test_rename(vault, 8944)
+        test_folders(vault, 8946)
         test_backup(vault, 8940)
         test_status(vault, 8938)
         test_status_in_repo(vault, 8939)

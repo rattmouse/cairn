@@ -234,6 +234,35 @@ def safe_path(rel, must_exist=False, suffix=".md"):
     return full
 
 
+def safe_dir(rel, must_exist=False):
+    """Resolve a vault-relative folder path, refusing anything that escapes
+    the root. Invariant 5's rule, for a path that is not a file.
+
+    safe_path() cannot do this one: its suffix check is what makes it safe,
+    and a folder has no suffix. So the rest of the check is the same and the
+    suffix is replaced by two rules of its own — the vault root is not a
+    folder anything may move or trash, and every component has to be one
+    list_notes() would walk into. That second rule is the important one: it
+    means the only folders this endpoint can reach are the folders the tree
+    can show, which keeps .git/, the state directory and node_modules out of
+    reach of a request that names them.
+    """
+    if rel is None or "\x00" in rel:
+        raise ValueError("bad folder")
+    rel = rel.strip().strip("/")
+    if not rel or rel.startswith(("/", "\\")):
+        raise ValueError("bad folder")
+    full = os.path.abspath(os.path.join(VAULT, rel))
+    if not full.startswith(VAULT + os.sep):
+        raise ValueError("folder escapes vault")
+    for part in os.path.relpath(full, VAULT).split(os.sep):
+        if part.startswith(".") or part in SKIP_DIRS:
+            raise ValueError("that folder is not part of the vault")
+    if must_exist and not os.path.isdir(full):
+        raise ValueError("no such folder")
+    return full
+
+
 def parse_frontmatter(text):
     if not text.startswith("---\n"):
         return {}, text
@@ -1595,8 +1624,243 @@ def rename_note(full, dest, client=None):
                 "mtime": os.path.getmtime(dest)}
 
 
+# --------------------------------------------------------------------------
+# folders
+# --------------------------------------------------------------------------
+#
+# A folder in cairn is not a thing in its own right: it exists exactly as long
+# as some note's path passes through it, which is also the only kind of folder
+# git records. So there is no "new folder" here — a folder appears when a note
+# is made inside it and is gone when the last one leaves — but moving and
+# trashing one are real operations, and doing them in the app rather than in a
+# file manager is what keeps the [[wikilinks]] and the history honest.
+#
+# The whole directory moves, not the notes out of it. A folder holds
+# attachments as well as notes, and moving the .md files while leaving the
+# images they embed behind would break every embed in it. git works the
+# renames out from the result, the same as it does for one note.
+
+
+def folder_notes(rel_dir):
+    """Every note the tree shows inside one folder, at any depth."""
+    prefix = rel_dir.rstrip("/") + "/"
+    return [n for n in list_notes() if n["path"].replace(os.sep, "/").startswith(prefix)]
+
+
+def folder_message(verb, rel, lines, client=None):
+    """The folder counterpart of commit_message(), and the same shape: the
+    name in the subject, the paths in the body, the client in a trailer.
+
+    The subject is the folder's own name rather than its path for the reason
+    commit_message() uses a note's title — a `git log --oneline` is read for
+    what happened, and "Move Health" is that. The path is a line below, where
+    two folders called Health stay tellable apart.
+    """
+    trailer = "\nClient: %s\n" % client["label"] if client else ""
+    name = os.path.basename(rel.rstrip("/")) or rel
+    return "%s %s\n\n%s\n%s" % (verb, name.replace("\n", " ")[:60],
+                                "\n".join(lines), trailer)
+
+
+def note_count(n):
+    return "%d note%s" % (n, "" if n == 1 else "s")
+
+
+def prune_empty(full):
+    """Remove the directory a folder was the last thing in. git does not track
+    directories, so nothing else would."""
+    if os.path.abspath(full) == VAULT or not full.startswith(VAULT + os.sep):
+        return
+    try:
+        os.rmdir(full)
+    except OSError:
+        pass
+
+
+def retarget_dir(text, old_dir, new_dir, moved):
+    """Repoint the path-style [[wikilinks]] that name a note inside a folder
+    that moved.
+
+    Only the path style. A folder rename changes no note's filename, so a
+    link that named one by its bare filename still names it, and rewriting it
+    would churn notes that had nothing to do with the move — the same
+    reasoning retarget() spells out for one note. `moved` is the set of notes
+    that actually moved, so a link naming something that merely looks like it
+    lived there is left exactly as it was.
+    """
+    old_dir, new_dir = old_dir.rstrip("/"), new_dir.rstrip("/")
+
+    def one(m):
+        bang, target, rest = m.group(1), m.group(2), m.group(3)
+        name = target.strip()
+        bare = name[:-3] if name.lower().endswith(".md") else name
+        if bare.lower() not in moved:
+            return m.group(0)
+        # Sliced by length rather than rebuilt, so the part of the link below
+        # the folder keeps whatever case the person who typed it used.
+        now = new_dir + bare[len(old_dir):]
+        if name.lower().endswith(".md"):
+            now += name[-3:]
+        return "%s[[%s%s]]" % (bang, now, rest)
+
+    return WIKILINK.sub(one, text)
+
+
+def rename_folder(full, dest, client=None):
+    """Move a folder and everything in it, repoint the links that named what
+    moved, and commit all of it once.
+
+    Both or neither, the rule a save and a rename already keep: if the
+    repository refuses the commit, the directory goes back where it was and
+    every rewritten link goes back to the bytes it had.
+    """
+    old_rel = os.path.relpath(full, VAULT).replace(os.sep, "/")
+    new_rel = os.path.relpath(dest, VAULT).replace(os.sep, "/")
+    if (new_rel + "/").startswith(old_rel + "/"):
+        return {"ok": False, "error": "a folder cannot be moved inside itself"}
+    with GIT_LOCK:
+        if os.path.exists(dest):
+            return {"ok": False, "error": "something of that name is already there"}
+        # Whatever is on disk gets its own history before the move does, so a
+        # folder move cannot swallow an edit that was never committed.
+        if git_dirty():
+            adopt_and_log()
+
+        inside = folder_notes(old_rel)
+        moved = {n["path"]: new_rel + n["path"][len(old_rel):] for n in inside}
+        stems = {p[:-3].lower() for p in moved}
+
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            os.replace(full, dest)
+        except OSError as e:
+            return {"ok": False, "error": "could not move the folder — %s" % e}
+
+        # After the move, so the notes that moved are read at their new paths
+        # and get the same repointing as everyone else's — a note inside the
+        # folder can link to one beside it by path just as easily.
+        touched, originals = [old_rel, new_rel], {}
+        for note in list_notes():
+            fixed = retarget_dir(note["raw"], old_rel, new_rel, stems)
+            if fixed != note["raw"]:
+                originals[note["path"]] = note["raw"]
+                atomic_write(os.path.join(VAULT, note["path"]), fixed)
+                touched.append(note["path"])
+
+        verb = ("Rename" if os.path.dirname(old_rel) == os.path.dirname(new_rel)
+                else "Move")
+        # "moved <old> to <new>", not commit_message()'s "was <old>": this
+        # commit moved a dozen notes, so what it has to record for
+        # note_history() to walk one of them back is the pair of folders, not
+        # any one note's old path.
+        ok, out = git_commit(touched, folder_message(
+            verb, new_rel,
+            [new_rel, "moved %s to %s" % (old_rel, new_rel), note_count(len(inside))],
+            client))
+        if not ok:
+            # Links first, then the directory: the rewritten notes are sitting
+            # at their moved paths right now, and putting them back means
+            # writing them where they currently are.
+            for rel, was in originals.items():
+                atomic_write(os.path.join(VAULT, rel), was)
+            try:
+                os.replace(dest, full)
+            except OSError:
+                pass
+            # The move may have made the destination's parent on the way in.
+            # Leaving it behind would be half a rollback: an empty folder the
+            # person never asked for, named after a move that did not happen.
+            prune_empty(os.path.dirname(dest))
+            git("reset", "-q", "--", *touched)
+            git_fresh()
+            return {"ok": False, "refused": out}
+
+        prune_empty(os.path.dirname(full))
+        client_mark(client)
+        git_fresh()
+        log_run("moved folder %s to %s" % (old_rel, new_rel))
+        # Every note that moved, under both names, and every note whose links
+        # were repointed: a browser holding any of them has something to pick
+        # up, and the one holding a moved note has to be told where it went.
+        bump_commit(sorted(set(list(moved) + list(moved.values())
+                               + list(originals))), client, verb)
+        return {"ok": True, "path": new_rel, "was": old_rel,
+                "moved": moved, "notes": len(inside),
+                "relinked": sorted(originals),
+                "commit": _git("rev-parse", "--short", "HEAD") or "",
+                "head": _git("rev-parse", "HEAD")}
+
+
+def trash_folder(full, client=None):
+    """Move a folder and everything in it to the trash, and commit the removal.
+
+    Trash and history are different jobs here for the same reason they are for
+    one note: trash is an undelete button for someone who clicked the wrong
+    row, history is the record of what the vault said. Both, therefore, not
+    either. The links that named what went are left dangling, as they are
+    after one note is trashed — a link to a note that is not there is the
+    truth, and rewriting it away would hide the deletion.
+    """
+    rel = os.path.relpath(full, VAULT).replace(os.sep, "/")
+    with GIT_LOCK:
+        # Same reason as remove_note(): an edit made outside cairn and never
+        # committed would go into the trash without ever having been in the
+        # history.
+        if git_dirty():
+            adopt_and_log()
+        inside = folder_notes(rel)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        dest = os.path.join(TRASH_DIR, rel + "." + stamp)
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.move(full, dest)
+        except OSError as e:
+            return None, "could not move the folder — %s" % e, 0
+        prune_empty(os.path.dirname(full))
+
+        message = folder_message("Delete", rel, [rel, note_count(len(inside))],
+                                 client)
+        code, out = git("add", "-A", "--", rel)
+        if code == 0:
+            code, out = git("commit", "-q", "-m", message, "--", rel)
+        git_fresh()
+        if code:
+            # The folder is already in the trash, so there is nothing to undo —
+            # but the removal is not in the history, and saying so is better
+            # than a silent divergence between the two.
+            return dest, out, len(inside)
+        client_mark(client)
+        log_run("trashed folder %s (%s)" % (rel, note_count(len(inside))))
+        bump_commit([n["path"] for n in inside], client, "Delete")
+        return dest, None, len(inside)
+
+
 LOG_FORMAT = "--format=%H%x1f%h%x1f%ct%x1f%s%x1f%b%x1e"
 RENAMED_FROM = re.compile(r"(?m)^was (.+)$")
+FOLDER_MOVED = re.compile(r"(?m)^moved (.+) to (.+)$")
+
+
+def renamed_from(version, path):
+    """What `path` was called before this commit, or None if the commit did
+    not move it.
+
+    Two kinds of commit move a note. Its own rename records the note's old
+    path; a folder move records the two folders, because it took every note
+    inside with it and no one note's old path would describe it. Both are
+    facts cairn wrote into the body when it made the commit — see
+    note_history() on why none of this is inferred.
+    """
+    if not version["subject"].startswith(("Rename ", "Move ")):
+        return None
+    moved = FOLDER_MOVED.search(version["body"])
+    if moved:
+        old, new = moved.group(1).strip(), moved.group(2).strip()
+        # A folder move is in this note's history only if this note is one of
+        # the ones it moved. The same commit is in the log of every note whose
+        # links it repointed, and those did not go anywhere.
+        return old + path[len(new):] if (path + "/").startswith(new + "/") else None
+    was = RENAMED_FROM.search(version["body"])
+    return was.group(1).strip() if was else None
 
 
 def parse_log(out):
@@ -1638,12 +1902,12 @@ def note_history(rel, limit=40):
                    *(since + ["--", path]))
         batch = parse_log(out)
         versions += batch
-        # A rename cairn made is the oldest thing this path can have: before
+        # A move cairn made is the oldest thing this path can have: before
         # it, the note was somewhere else.
-        was = RENAMED_FROM.search(batch[-1]["body"]) if batch else None
-        if not was or not batch[-1]["subject"].startswith("Rename "):
+        older = renamed_from(batch[-1], path) if batch else None
+        if not older:
             break
-        path, since = was.group(1).strip(), [batch[-1]["sha"] + "^"]
+        path, since = older, [batch[-1]["sha"] + "^"]
     for v in versions:
         v.pop("body", None)
     return versions
@@ -3032,8 +3296,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.fail(409, "a note with that name already exists")
             title = data.get("title") or os.path.basename(full)[:-3]
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            body = ("---\ntitle: %s\ntags: []\nupdated: %s\n---\n\n# %s\n\n"
-                    % (title, today, title))
+            # Text to start from, which is how a duplicate is one commit
+            # rather than an empty note and then a save. It is a note's own
+            # bytes coming back, not a path or a command, and it goes through
+            # the same write_note() — and so the same hook — as any other
+            # new note. Its frontmatter title is brought into step with the
+            # new filename for rename_note()'s reason: the sidebar shows the
+            # title, so a copy that kept the original's would be two rows
+            # with one name.
+            body = data.get("content")
+            if not isinstance(body, str) or not body.strip():
+                body = ("---\ntitle: %s\ntags: []\nupdated: %s\n---\n\n# %s\n\n"
+                        % (title, today, title))
+            else:
+                body = re.sub(r"(?m)\A(---\n(?:.*\n)*?title:).*$",
+                              lambda m: m.group(1) + " " + title, body, count=1)
             ok, detail, _ = write_note(full, body, "Add", self.client())
             if not ok:
                 return self.send_json(422, {"ok": False, "refused": detail,
@@ -3064,6 +3341,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not result["ok"]:
                 return self.fail(409, result["error"])
             return self.send_json(200, result)
+
+        if route == "/api/folder/rename":
+            # Two folder paths from the request, both through safe_dir(),
+            # which is what keeps the move inside the vault and on a folder
+            # the tree could have shown in the first place. Neither ever
+            # reaches git as anything but a pathspec after `--`.
+            try:
+                data = self.body_json()
+                full = safe_dir(data["path"], must_exist=True)
+                dest = safe_dir(data["to"])
+            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                return self.fail(400, str(e))
+            if os.path.normcase(dest) == os.path.normcase(full):
+                return self.fail(400, "that is the name it already has")
+            result = rename_folder(full, dest, self.client())
+            if result.get("refused") is not None:
+                return self.send_json(422, {
+                    "ok": False, "refused": result["refused"],
+                    "error": "the vault's git hook refused this move"})
+            if not result["ok"]:
+                return self.fail(409, result["error"])
+            return self.send_json(200, result)
+
+        if route == "/api/folder/trash":
+            try:
+                data = self.body_json()
+                full = safe_dir(data["path"], must_exist=True)
+            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                return self.fail(400, str(e))
+            dest, why, count = trash_folder(full, self.client())
+            if dest is None:
+                return self.fail(409, why)
+            # The folder is in the trash either way; `why` says the removal
+            # did not make it into the history, which is worth telling the
+            # user — the same shape /api/trash answers in.
+            return self.send_json(200, {"ok": True, "trashed": dest,
+                                        "notes": count, "uncommitted": why})
 
         if route == "/api/backup":
             # Nothing in the body is read. Where a backup goes was decided on
