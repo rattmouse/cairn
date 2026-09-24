@@ -66,6 +66,7 @@ Safety
 """
 
 import argparse
+import difflib
 import hashlib
 import html
 import http.cookies
@@ -1317,6 +1318,49 @@ def show_at(sha, rel):
         return p.stdout.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+
+def diff_lines(a, b):
+    """Two texts -> a line-level diff the history panel can render in two
+    colours: a list of {"kind": "same"|"add"|"del", "text": …} segments, each
+    text ending in the newlines that were actually there. difflib rather than
+    shelling out to `git diff` — the two versions are already in hand from
+    show_at(), and a note is one file, not a tree `git diff` needs to walk."""
+    a_lines = a.splitlines(keepends=True)
+    b_lines = b.splitlines(keepends=True)
+    segments = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, a_lines, b_lines, autojunk=False).get_opcodes():
+        if tag == "equal":
+            segments.append({"kind": "same", "text": "".join(a_lines[i1:i2])})
+        else:
+            if tag in ("delete", "replace"):
+                segments.append({"kind": "del", "text": "".join(a_lines[i1:i2])})
+            if tag in ("insert", "replace"):
+                segments.append({"kind": "add", "text": "".join(b_lines[j1:j2])})
+    return segments
+
+
+def diff_at(sha, rel):
+    """One commit's change to one note: the line diff against its parent, or
+    against nothing if this is the commit that created the note. None if the
+    commit doesn't touch `rel` at all.
+
+    The parent is read at the path this commit renamed `rel` *from*, when the
+    commit is one of cairn's own renames — the same fact note_history() reads
+    out of the commit body, so a rename still shows as an edit rather than a
+    wholesale delete-and-add.
+    """
+    new_text = show_at(sha, rel)
+    if new_text is None:
+        return None
+    log = _git("log", "-1", LOG_FORMAT, sha)
+    versions = parse_log(log)
+    old_path = (renamed_from(versions[0], rel) if versions else None) or rel
+    old_text = show_at(sha + "^", old_path)
+    if old_text is None:
+        old_text = ""
+    return diff_lines(old_text, new_text)
 
 
 def save_note(full, content, client=None, base=None, auto=False):
@@ -3121,6 +3165,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.fail(404, "that note is not in that commit")
             return self.send_json(200, {"ok": True, "sha": sha, "path": rel,
                                         "content": text})
+
+        if path == "/api/history/diff":
+            # One commit's change to one note, as a line diff rather than the
+            # whole file — what the history panel shows by default now.
+            if not self.authed():
+                return self.fail(403, "not unlocked")
+            q = urllib.parse.parse_qs(url.query)
+            sha = (q.get("sha") or [""])[0]
+            rel = (q.get("path") or [""])[0]
+            if not re.fullmatch(r"[0-9a-fA-F]{7,64}", sha or ""):
+                return self.fail(400, "not a commit id")
+            try:
+                safe_path(rel)
+            except ValueError as e:
+                return self.fail(400, str(e))
+            segments = diff_at(sha, rel)
+            if segments is None:
+                return self.fail(404, "that note is not in that commit")
+            return self.send_json(200, {"ok": True, "sha": sha, "path": rel,
+                                        "segments": segments})
 
         if path == "/api/events":
             # The live feed: what has landed on trunk since the sequence

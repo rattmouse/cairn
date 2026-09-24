@@ -232,6 +232,16 @@ body[data-right="off"] #outline{display:none}
   display:none;align-items:center;justify-content:center;padding:24px}
 #cveil.open,#vveil.open{display:flex}
 #vbody{flex:1;overflow-y:auto;padding:18px 24px}
+#vbody.diff{padding:10px 0;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:12.5px;line-height:1.6}
+#vbody.diff .dline{white-space:pre-wrap;word-break:break-word;padding:0 20px;
+  border-left:3px solid transparent}
+#vbody.diff .dline.add{background:color-mix(in srgb,var(--ok) 14%,transparent);
+  border-left-color:var(--ok)}
+#vbody.diff .dline.del{background:color-mix(in srgb,var(--bad) 14%,transparent);
+  border-left-color:var(--bad);opacity:.85}
+#vbody.diff .dempty{padding:10px 20px;color:var(--dim)}
 #cdlg,#vdlg{background:var(--panel);border:1px solid var(--edge);border-radius:12px;
   box-shadow:var(--shadow-lg);width:min(880px,100%);max-height:100%;
   display:flex;flex-direction:column;overflow:hidden}
@@ -3200,9 +3210,14 @@ async function showVersion(v, forPath){
      in the editor at all. */
   const path = forPath || HIST_FOR;
   try {
-    const got = await api("/api/history/show?sha=" + encodeURIComponent(v.sha)
-                        + "&path=" + encodeURIComponent(path));
-    VERSION_SHOWN = {version: v, path: path, content: got.content};
+    const [got, diff] = await Promise.all([
+      api("/api/history/show?sha=" + encodeURIComponent(v.sha)
+        + "&path=" + encodeURIComponent(path)),
+      api("/api/history/diff?sha=" + encodeURIComponent(v.sha)
+        + "&path=" + encodeURIComponent(path))
+    ]);
+    VERSION_SHOWN = {version: v, path: path, content: got.content,
+                     segments: diff.segments};
   } catch (e){
     setStatus(e.message, "error");
     return;
@@ -3213,16 +3228,37 @@ async function showVersion(v, forPath){
                          + (v.client ? " · " + v.client : "");
   $("vTally").textContent = "Read-only. Restoring only fills the editor — you "
                           + "still save it, and it becomes a new commit.";
-  dropSurfacesIn($("vbody"));
-  $("vbody").innerHTML = render(VERSION_SHOWN.content, ctx());
-  hydrate($("vbody"));
+  drawVersionDiff();
   $("vRestore").disabled = !current || current.path !== path;
   $("vveil").classList.add("open");
+}
+
+function drawVersionDiff(){
+  const el = $("vbody");
+  dropSurfacesIn(el);
+  el.className = "diff";
+  const segs = VERSION_SHOWN.segments;
+  if (!segs || !segs.length){
+    el.innerHTML = '<div class="dempty">This commit made no change here.</div>';
+    return;
+  }
+  el.innerHTML = "";
+  for (const seg of segs){
+    for (const line of seg.text.split(/(?<=\n)/)){
+      if (!line) continue;
+      const d = document.createElement("div");
+      d.className = "dline" + (seg.kind === "same" ? "" : " " + seg.kind);
+      d.textContent = (seg.kind === "add" ? "+ " : seg.kind === "del" ? "- " : "  ")
+                     + line.replace(/\n$/, "");
+      el.appendChild(d);
+    }
+  }
 }
 
 function closeVersion(){
   $("vveil").classList.remove("open");
   dropSurfacesIn($("vbody"));
+  $("vbody").className = "md";
   $("vbody").innerHTML = "";
   VERSION_SHOWN = null;
 }
