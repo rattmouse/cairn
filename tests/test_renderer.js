@@ -1,13 +1,13 @@
 /*
- * Tests for the markdown renderer and the block splitter in editor.html.
+ * Tests for the markdown renderer in editor.html.
  *
  *     node tests/test_renderer.js
  *
  * The renderer is hand-written and was, until this file existed, the largest
  * unguarded thing in the repo. It is a pure function of (markdown, context) ->
- * html, so it needs no browser: this reads editor.html, cuts out the two
- * regions that make up the parser, and runs them with the handful of globals
- * they touch stubbed.
+ * html, so it needs no browser: this reads editor.html, cuts out the region
+ * that makes up the parser, and runs it with the handful of globals it
+ * touches stubbed.
  *
  * Cutting rather than importing is deliberate. editor.html being one file you
  * can read top to bottom is a feature of cairn, and a renderer.js beside it
@@ -39,10 +39,8 @@ function cut(text, from, to, what){
 }
 
 const html = fs.readFileSync(EDITOR, "utf8");
-const source = [
-  cut(html, "function esc(s){", "/* ============================== state ===", "renderer"),
-  cut(html, "const LIST_RE =", "function grow(ta){", "block splitter")
-].join("\n");
+const source =
+  cut(html, "function esc(s){", "/* ============================== state ===", "renderer");
 
 /* What the two regions reach for and this harness is not: a token for image
    URLs, the note-address helper, and the flag that decides whether a shell
@@ -56,7 +54,7 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, {filename: "editor.html (extracted)"});
 
-const {render, blocksOf, inline, splitFm} = sandbox;
+const {render, inline, splitFm} = sandbox;
 
 /* The context a page builds for a render: the images it knows about, the
    notes a [[wikilink]] can land on, and the running task count. */
@@ -88,14 +86,6 @@ function eq(label, md, want, over){
 function has(label, md, want, over){
   const got = html_of(md, over);
   check(label, got.includes(want), got);
-}
-
-function blocks(md){
-  const lines = md.split("\n");
-  return blocksOf(md).map(b => ({
-    kind: b.kind, num: b.num,
-    text: lines.slice(b.a, b.b).join("\n")
-  }));
 }
 
 // --------------------------------------------------------------------------
@@ -195,73 +185,6 @@ eq("a paragraph after a list is not swallowed by it", "- a\n\nAfter.\n",
    "<ul><li>a</li></ul><p>After.</p>");
 has("a nested task keeps its place in the count",
     "- [ ] one\n  - [x] two\n- [ ] three\n", 'data-task="2" data-on="0"');
-
-// --------------------------------------------------------------------------
-console.log("\nthe block splitter");
-
-const three = blocks("1. one\n2. two\n3. three\n");
-check("every top-level list item is its own block",
-      three.length === 3 && three.every(b => b.kind === "li"),
-      JSON.stringify(three));
-check("an ordered item remembers the number it was written with",
-      JSON.stringify(three.map(b => b.num)) === "[1,2,3]",
-      JSON.stringify(three.map(b => b.num)));
-
-/* One item to a block, nested or not — live mode is for editing a paragraph
-   at a time — so what carries the nesting is the depth each block records. */
-const deep = blocksOf("- parent\n  - child\n    - deeper\n- second\n");
-check("a nested item is its own block at its own depth",
-      deep.length === 4
-        && JSON.stringify(deep.map(b => b.depth)) === "[0,1,2,0]",
-      JSON.stringify(deep.map(b => b.depth)));
-check("and the depth starts over after something that is not a list",
-      JSON.stringify(blocksOf("- a\n  - b\n\npara\n\n- c\n")
-        .filter(b => b.kind === "li").map(b => b.depth)) === "[0,1,0]",
-      JSON.stringify(blocksOf("- a\n  - b\n\npara\n\n- c\n").map(b => b.kind)));
-
-const loose = blocks("- a\n\n  still a\n\n- b\n");
-check("a blank line inside an item does not end it",
-      loose.length === 2 && loose[0].text.includes("still a"),
-      JSON.stringify(loose));
-
-const after = blocks("- a\n\nAfter.\n");
-check("but a paragraph after the list is its own block",
-      after.length === 2 && after[1].kind === "p",
-      JSON.stringify(after));
-
-const fenced = blocks("- item\n  ```sh\n  one\n\n  two\n  ```\n");
-check("a fence under a list item stays in the item, blank line and all",
-      fenced.length === 1 && fenced[0].text.endsWith("  ```"),
-      JSON.stringify(fenced));
-
-const tabbed = blocks("- item\n\tcontinued here\n");
-check("a tab-indented continuation stays in its item",
-      tabbed.length === 1 && tabbed[0].text.includes("continued"),
-      JSON.stringify(tabbed));
-
-const code = blocks("  ```sh\n  echo hi\n  ```\n");
-check("an indented fence is one code block",
-      code.length === 1 && code[0].kind === "code", JSON.stringify(code));
-
-const fm = blocks("---\ntitle: X\n---\n\n# H\n");
-check("frontmatter is one block whatever is in it",
-      fm.length === 2 && fm[0].kind === "fm" && fm[1].kind === "h1",
-      JSON.stringify(fm));
-
-const kinds = blocks("# H\n\npara\n\n> quote\n\n| a |\n|---|\n| 1 |\n\n---\n")
-  .map(b => b.kind);
-check("each kind is recognised",
-      JSON.stringify(kinds) === JSON.stringify(["h1", "p", "quote", "table", "hr"]),
-      JSON.stringify(kinds));
-
-const every = md => {
-  const lines = md.split("\n");
-  const seen = new Set();
-  for (const b of blocksOf(md)) for (let i = b.a; i < b.b; i++) seen.add(i);
-  return lines.every((l, i) => !l.trim() || seen.has(i));
-};
-check("no line with text in it falls outside every block",
-      every("# H\n\n- a\n  - b\n\n```\nx\n```\n\n> q\n\n| a |\n|---|\n| 1 |\n\ntail\n"));
 
 // --------------------------------------------------------------------------
 console.log("\n%d passed, %d failed", passed, failed.length);
