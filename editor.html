@@ -194,6 +194,8 @@ body[data-right="off"] #outline{display:none}
 #status.saved{color:var(--ok)}
 #status.error{color:var(--bad);font-weight:600}
 #seg{width:236px;height:30px;flex:0 0 236px;display:block;border-radius:var(--r);cursor:pointer}
+#splitDirBtn{display:none}
+body[data-mode="split"] #splitDirBtn{display:inline-block}
 
 /* The save-refused banner. It sits between the bar and the panes rather than
    over them: the text it is about is still in the textarea, and covering that
@@ -280,30 +282,50 @@ body[data-right="off"] #outline{display:none}
   color:var(--faint);white-space:pre-wrap;word-break:break-word;
   border-left:3px solid var(--edge-soft);margin:0 0 12px 4px}
 #panes{flex:1;display:flex;min-height:0;position:relative}
-#editWrap,#viewWrap,#liveWrap{min-width:0;position:relative;flex:1 1 0}
-#editWrap{display:none}
-#viewWrap,#liveWrap{display:none;overflow:auto}
-body[data-mode="edit"] #editWrap{display:block}
+#editWrap,#viewWrap{min-width:0;min-height:0;position:relative;flex:1 1 0}
+/* A flex column of its own, not height:100% on #ed -- a flex item's height
+   coming from flex-basis (the stacked split's main axis) isn't a "definite"
+   height for a percentage-height child to resolve against, so #ed would fall
+   back to its intrinsic size and spill out of the pane. Flexing #ed with
+   flex:1 sidesteps that: it takes whatever box #editWrap actually ends up
+   with, on either axis, with no percentage involved. */
+#editWrap{display:none;flex-direction:column}
+#viewWrap{display:none;overflow:auto}
+body[data-mode="edit"] #editWrap{display:flex}
 body[data-mode="view"] #viewWrap{display:block}
-body[data-mode="live"] #liveWrap{display:block}
-body[data-mode="split"] #editWrap,body[data-mode="split"] #viewWrap{display:block}
+body[data-mode="split"] #editWrap{display:flex}
+body[data-mode="split"] #viewWrap{display:block}
 body[data-mode="split"] #editWrap{flex:0 0 var(--split,50%)}
+/* Side by side is the default axis; stacked flips #panes onto the other one,
+   and the grip and its resize math follow along (see setSplitDir()). */
+body[data-mode="split"][data-splitdir="v"] #panes{flex-direction:column}
 #grip{display:none;flex:0 0 9px;cursor:col-resize;background:var(--bg);
   border-left:1px solid var(--edge);border-right:1px solid var(--edge);
   position:relative;touch-action:none}
 body[data-mode="split"] #grip{display:block}
+body[data-mode="split"][data-splitdir="v"] #grip{cursor:row-resize;
+  border-left:0;border-right:0;border-top:1px solid var(--edge);
+  border-bottom:1px solid var(--edge)}
 #grip canvas{width:9px;height:100%;display:block}
+body[data-splitdir="v"] #grip canvas{width:100%;height:9px}
 #grip:hover,#grip.drag{background:var(--panel)}
 body.resizing{cursor:col-resize;user-select:none}
+body.resizing[data-splitdir="v"]{cursor:row-resize}
 
-#ed{width:100%;height:100%;padding:26px 34px 40vh 30px;border:0;outline:none;resize:none;
-  background:var(--bg);color:var(--ink);tab-size:4;display:block;overflow:auto;
+#ed{width:100%;flex:1 1 auto;min-height:0;padding:26px 34px 40vh 30px;border:0;outline:none;
+  resize:none;background:var(--bg);color:var(--ink);tab-size:4;overflow:auto;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.5px;line-height:1.7}
+/* That bottom padding is sized off the whole window so the last line can
+   scroll away from the edge -- fine when the editor is nearly full height,
+   but padding can't be flexed away, so at the stacked split's own (much
+   shorter) height it would force the pane to overflow into the preview
+   below it. Stacked gets a much smaller allowance instead. */
+body[data-mode="split"][data-splitdir="v"] #ed{padding-bottom:15vh}
 #ed::placeholder{color:var(--faint)}
 #map{position:absolute;top:0;right:0;width:22px;height:100%;display:block;
   cursor:pointer;opacity:.85;transition:opacity .15s;touch-action:none}
 #map:hover{opacity:1}
-#view,#live{max-width:760px;margin:0 auto;padding:30px 34px 40vh}
+#view{max-width:760px;margin:0 auto;padding:30px 34px 40vh}
 
 /* ------------------------ rendered markdown ------------------------ */
 .md h1{font-size:26px;line-height:1.25;margin:32px 0 14px;padding-bottom:7px;
@@ -545,43 +567,6 @@ body[data-graph="on"] #graph{display:flex}
 .tog.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
 .tog canvas{width:9px;height:9px;display:inline-block;vertical-align:-1px;margin-right:5px}
 
-/* ---------------------------- live mode ----------------------------
-   The note reads as the preview does, one rendered block at a time, until
-   the caret lands in a block -- that one shows its markdown instead. */
-.blk{position:relative}
-/* Consecutive list items are separate blocks so that only the item you are in
-   goes raw. Rendered, each is its own one-item list, and the margins between
-   them have to come back out or the list falls apart into paragraphs. */
-.blk[data-run="start"] ul,.blk[data-run="start"] ol,
-.blk[data-run="mid"]   ul,.blk[data-run="mid"]   ol{margin-bottom:0}
-.blk[data-run="mid"]   ul,.blk[data-run="mid"]   ol,
-.blk[data-run="end"]   ul,.blk[data-run="end"]   ol{margin-top:0}
-#live > .blk:first-child h1{margin-top:0}
-#live > .blk:first-child > .fm{margin-top:0}
-/* The block being edited: same width, same left edge and the same font as the
-   text it replaced, so moving between them does not shift the page. The tint
-   and the bar in the margin are what say where you are. */
-.raw{display:block;width:100%;margin:0 0 13px;padding:2px 0 2px 12px;border:0;
-  border-left:2px solid var(--accent);border-radius:0 var(--r) var(--r) 0;
-  background:var(--accent-soft);color:var(--ink);font:inherit;tab-size:4;
-  outline:none;resize:none;overflow:hidden;white-space:pre-wrap;word-break:break-word}
-.raw.h1{font-size:26px;font-weight:700;line-height:1.25;margin:32px 0 14px}
-.raw.h2{font-size:19px;font-weight:700;line-height:1.35;margin:30px 0 10px}
-.raw.h3,.raw.h4,.raw.h5,.raw.h6{font-size:12px;font-weight:700;margin:24px 0 8px;
-  text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
-.raw.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
-  line-height:1.55;margin:0 0 16px;padding:12px 14px 12px 12px}
-.raw.table,.raw.hr{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-  font-size:12.5px;line-height:1.6;margin:0 0 16px}
-.raw.fm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
-  line-height:1.6;margin:0 0 22px;padding:9px 13px}
-/* Live mode cuts one block per list item, so a nested item is a one-item
-   list with no parent list to sit inside. --d is how deep it was. */
-.blk.li{margin-left:calc(24px * var(--d,0))}
-.raw.li{margin:3px 0 3px calc(24px + 24px * var(--d,0));
-        width:calc(100% - 24px - 24px * var(--d,0))}
-#live .hint{color:var(--faint)}
-
 /* Anywhere the outline can jump to. */
 .md [id^="L"]{scroll-margin-top:14px}
 
@@ -603,6 +588,7 @@ body[data-graph="on"] #graph{display:flex}
   body[data-mode="split"] #editWrap{display:none}
   body[data-mode="split"] #grip{display:none}
   body[data-mode="split"] #viewWrap{flex:1 1 auto}
+  #splitDirBtn{display:none !important}
   #footbar{flex-wrap:wrap;gap:6px 12px;padding:6px 12px}
   #footgap{display:none}
   #console{height:min(200px,40vh)}
@@ -630,7 +616,7 @@ body[data-graph="on"] #graph{display:flex}
   #bar{gap:6px;padding:8px}
   #seg{width:152px;flex:0 0 152px}
   .tog{padding:4px 7px}
-  #view,#live{padding:22px 20px 40vh}
+  #view{padding:22px 20px 40vh}
   #ed{padding:20px 30px 40vh 18px}
 }
 @media (prefers-reduced-motion:reduce){
@@ -638,7 +624,7 @@ body[data-graph="on"] #graph{display:flex}
 }
 </style>
 </head>
-<body data-mode="split">
+<body data-mode="split" data-splitdir="h">
 <div id="boot"><canvas id="bootMark" aria-hidden="true"></canvas><span id="bootMsg">reading the vault…</span></div>
 
 <div id="app">
@@ -680,6 +666,8 @@ body[data-graph="on"] #graph{display:flex}
       <div id="state"><canvas id="orb" aria-hidden="true"></canvas>
         <div id="status" role="status" aria-live="polite"></div></div>
       <canvas id="seg" tabindex="0" role="tablist" aria-label="View mode"></canvas>
+      <button class="tog" id="splitDirBtn" type="button" title="Stack the split top-to-bottom instead of side by side"
+        aria-pressed="false">Stacked</button>
       <button class="btn primary" id="saveBtn" disabled>Save</button>
       <button class="tog" id="rightBtn" type="button" title="Outline (Ctrl/⌘-E)"
         aria-pressed="true">Outline</button>
@@ -704,7 +692,6 @@ body[data-graph="on"] #graph{display:flex}
       </div>
       <div id="grip" role="separator" aria-label="Resize panes" tabindex="0"><canvas aria-hidden="true"></canvas></div>
       <div id="viewWrap"><div id="view" class="md"></div></div>
-      <div id="liveWrap"><div id="live" class="md"></div></div>
     </div>
   </main>
 
@@ -1200,7 +1187,7 @@ const dialS = surface($("dial"), (g, w, h, s) => {
 /* ------------------------- segmented control -------------------------
    A real control, not three buttons: one canvas, an animated pill, hover
    and focus states, and arrow-key navigation.                          */
-const MODES = [["edit", "Edit"], ["split", "Split"], ["live", "Live"], ["view", "Preview"]];
+const MODES = [["edit", "Edit"], ["split", "Split"], ["view", "Preview"]];
 let mode = "split";
 const segEl = $("seg");
 const segS = surface(segEl, (g, w, h, s) => {
@@ -1246,6 +1233,9 @@ function setMode(m, animated){
      are source line numbers and two copies would both claim them -- so the
      pane being switched to has to be filled before it is looked at. */
   if (current) preview();
+  /* Coming back to split with the caret already past the section that was on
+     screen when it was left should still line the preview back up. */
+  if (m === "split"){ followLine = null; followCaret(); }
   /* The panes only just changed size; the surfaces inside them need it. */
   requestAnimationFrame(() => { mapS.paint(); gripS.paint(); spy(); });
 }
@@ -1268,15 +1258,27 @@ segEl.addEventListener("keydown", e => {
 
 /* --------------------------- pane splitter --------------------------- */
 const gripEl = $("grip");
+let splitDir = "h";                /* "h": side by side, "v": stacked */
 const gripS = surface(gripEl.firstElementChild, (g, w, h, s) => {
-  const n = 3, gap = 4, cy = h / 2;
+  const n = 3, gap = 4;
   g.fillStyle = s.state.hot ? c("accent") : c("edge");
   for (let i = 0; i < n; i++){
+    const off = (i - (n - 1) / 2) * gap;
     g.beginPath();
-    g.arc(w / 2, cy + (i - (n - 1) / 2) * gap, 1.15, 0, Math.PI * 2);
+    g.arc(splitDir === "v" ? w / 2 + off : w / 2, splitDir === "v" ? h / 2 : h / 2 + off,
+          1.15, 0, Math.PI * 2);
     g.fill();
   }
 });
+function setSplitDir(dir){
+  splitDir = dir;
+  document.body.dataset.splitdir = dir;
+  try { localStorage.setItem("cairn-splitdir", dir); } catch (e) {}
+  $("splitDirBtn").classList.toggle("on", dir === "v");
+  $("splitDirBtn").setAttribute("aria-pressed", dir === "v");
+  requestAnimationFrame(() => { mapS.paint(); gripS.paint(); });
+}
+$("splitDirBtn").addEventListener("click", () => setSplitDir(splitDir === "v" ? "h" : "v"));
 function setSplit(pct){
   pct = clamp(pct, 18, 82);
   document.body.style.setProperty("--split", pct.toFixed(2) + "%");
@@ -1297,7 +1299,9 @@ gripEl.addEventListener("pointerdown", e => {
 gripEl.addEventListener("pointermove", e => {
   if (!gripEl.classList.contains("drag")) return;
   const r = $("panes").getBoundingClientRect();
-  setSplit((e.clientX - r.left) / r.width * 100);
+  setSplit(splitDir === "v"
+    ? (e.clientY - r.top) / r.height * 100
+    : (e.clientX - r.left) / r.width * 100);
 });
 function endGrip(){
   if (!gripEl.classList.contains("drag")) return;
@@ -1310,8 +1314,10 @@ gripEl.addEventListener("pointercancel", endGrip);
 gripEl.addEventListener("dblclick", () => setSplit(50));
 gripEl.addEventListener("keydown", e => {
   const cur = parseFloat(getComputedStyle(document.body).getPropertyValue("--split")) || 50;
-  if (e.key === "ArrowLeft"){ e.preventDefault(); setSplit(cur - 3); }
-  if (e.key === "ArrowRight"){ e.preventDefault(); setSplit(cur + 3); }
+  const shrink = splitDir === "v" ? "ArrowUp" : "ArrowLeft";
+  const grow   = splitDir === "v" ? "ArrowDown" : "ArrowRight";
+  if (e.key === shrink){ e.preventDefault(); setSplit(cur - 3); }
+  if (e.key === grow){ e.preventDefault(); setSplit(cur + 3); }
 });
 
 /* --------------------------- document map ---------------------------
@@ -1600,8 +1606,7 @@ function codeTools(lang){
    headings and code blocks the renderer emits can carry an id naming their
    source line -- the one thing the outline, the preview and the caret can all
    agree on. Nested renders (callouts, blockquotes) pass their own offset down
-   rather than restarting at zero, and live mode renders one block at a time
-   with the block's own offset. */
+   rather than restarting at zero. */
 function render(text, ctx, base){
   base = base || 0;
   const [fm, body] = splitFm(text);
@@ -1711,9 +1716,9 @@ function render(text, ctx, base){
       const shut = () => { l += "</li></" + stack.pop().tag + ">"; };
       while (i < lines.length){
         if (!lines[i].trim()){
-          /* A blank line between two items is spacing — one list on the page,
-             which is how blocksOf() reads the same run. Only a blank with
-             something that is not an item under it ends the list. */
+          /* A blank line between two items is spacing — one list on the page.
+             Only a blank with something that is not an item under it ends
+             the list. */
           let k = i;
           while (k < lines.length && !lines[k].trim()) k++;
           if (k >= lines.length || !/^\s*([-*+]|\d+\.)\s+/.test(lines[k])) break;
@@ -2164,20 +2169,6 @@ function mark(line){
 }
 
 function gotoLine(line){
-  if (mode === "live"){
-    /* One place to go rather than two: the block holding that line opens for
-       editing, which is what the outline is pointing at. */
-    const file = line + OUT_OFF;
-    const i = BLOCKS.findIndex(b => file >= b.a && file < b.b);
-    if (i >= 0){
-      activate(i, 0);
-      const ta = liveEl.querySelector("textarea.raw");
-      if (ta) ta.scrollIntoView({block: "center"});
-    }
-    mark(line);
-    spyHold = now() + 700;
-    return;
-  }
   /* The caret first. Focusing the textarea scrolls it, and a browser treats
      that as the user taking over -- it cancels a smooth scroll already running
      in the preview, which left the preview short of where it was going. */
@@ -2200,8 +2191,8 @@ function spy(){
   spying = true;
   requestAnimationFrame(() => {
     spying = false;
-    const wrap = $("viewWrap").offsetParent ? $("viewWrap") : $("liveWrap");
-    if (!wrap.offsetParent) return;             /* neither is on screen */
+    const wrap = $("viewWrap");
+    if (!wrap.offsetParent) return;             /* not on screen */
     const line = wrap.getBoundingClientRect().top + 48;
     let hit = null;
     for (const b of $("outBody").querySelectorAll("button[data-line]")){
@@ -2214,417 +2205,51 @@ function spy(){
   });
 }
 
+/* In split mode, the preview follows the caret rather than sitting wherever
+   it last was: whichever heading or code block the caret is under scrolls to
+   the top of the pane, the same place clicking that entry in the outline
+   would put it. Headings and code blocks are the only anchors the renderer
+   hands out, so moving within a section does not re-scroll -- only crossing
+   into a different one does, which is what keeps this from fighting a
+   deliberate scroll of the preview mid-section. */
+let followLine = null;
+function followCaret(){
+  if (mode !== "split" || !current) return;
+  const items = $("outBody").querySelectorAll("button[data-line]");
+  if (!items.length) return;
+  const line = edEl.value.slice(0, edEl.selectionStart).split("\n").length - 1 - OUT_OFF;
+  let hit = null;
+  for (const b of items){
+    if (+b.dataset.line <= line) hit = b; else break;
+  }
+  if (!hit || +hit.dataset.line === followLine) return;
+  followLine = +hit.dataset.line;
+  const el = document.getElementById("L" + followLine);
+  if (el) el.scrollIntoView({block: "start", behavior: "smooth"});
+  spyHold = now() + 700;
+}
+
 /* ----------------------------- preview ----------------------------- */
-/* hydrate() takes a root because live mode renders block by block into a
-   second pane, and every canvas in either of them needs the same wiring. */
-function hydrate(root){
-  for (const cv of root.querySelectorAll("canvas[data-icon]")){
+function hydrate(){
+  for (const cv of viewEl.querySelectorAll("canvas[data-icon]")){
     const kind = cv.dataset.icon;
     surface(cv, (g, w, h) => {
       const col = cv.closest("button").classList.contains("done") ? c("ok") : c("dim");
       (kind === "copy" ? drawCopyIcon : drawTermIcon)(g, w, h, col);
     });
   }
-  for (const cv of root.querySelectorAll("canvas[data-task]")){
+  for (const cv of viewEl.querySelectorAll("canvas[data-task]")){
     const n = +cv.dataset.task;
     taskBox(cv, cv.dataset.on === "1", on => toggleTask(n, on, cv));
   }
 }
 
 function preview(){
-  /* One rendered tree at a time: headings and code blocks carry an id naming
-     their source line, and two copies of the note would mean two elements
-     claiming the same id, after which nothing that scrolls to one works. */
-  if (mode === "live"){
-    dropSurfacesIn(viewEl);
-    viewEl.innerHTML = "";
-    drawLive();
-  } else {
-    dropSurfacesIn(liveEl);
-    liveEl.innerHTML = "";
-    BLOCK_AT = null;
-    dropSurfacesIn(viewEl);
-    viewEl.innerHTML = render(edEl.value, ctx());
-    hydrate(viewEl);
-  }
+  dropSurfacesIn(viewEl);
+  viewEl.innerHTML = render(edEl.value, ctx());
+  hydrate();
   drawOutline();
 }
-
-/* ------------------------------ live mode ------------------------------ */
-/* The note reads as the preview does, except for the block the caret is in:
-   that one is a textarea holding its own markdown. Two things make it work
-   without a second copy of anything. The blocks are cut on the same rules the
-   renderer uses, so a rendered block and its source are the same lines. And
-   #ed stays the one true text -- the inline editor splices its own lines back
-   into it on every keystroke, so saving, the outline, the document map, the
-   conflict check and Ctrl-S all carry on reading the note they always did.
-
-   Block, not line: a paragraph is three lines that render as one thing, and
-   there is no half-rendered paragraph to put a raw line inside. List items
-   are cut one per block, though, because a whole list going raw to fix one
-   bullet is exactly the jolt this mode exists to avoid. */
-
-const liveEl = $("live");
-let BLOCKS = [];               /* the blocks, in file line numbers */
-let BLOCK_AT = null;           /* which one is open, if any */
-
-const LIST_RE = /^\s*([-*+]|\d+\.)\s+/;
-const HEAD_RE = /^(#{1,6})\s+/;
-const RULE_RE = /^\s*(---|\*\*\*|___)\s*$/;
-/* A fence of its own, up to the three spaces of indent that still read as
-   one, and a fence at any indent at all — which is what a fence written under
-   a list item is. */
-const FENCE_RE = /^\s{0,3}```/;
-const FENCE_ANY = /^\s*```/;
-/* What continues the line above rather than starting something of its own.
-   The tab is not pedantry: cairn's own Tab key types two spaces, but a note
-   written in another editor indents with \t, and a rule that counted
-   whitespace characters left those lines out of the block they belong to. */
-const CONT_RE = /^(?:\t|\s{2,})\S/;
-
-function blocksOf(text){
-  const lines = text.split("\n");
-  const out = [];
-  let i = 0;
-
-  /* Frontmatter is one block whatever is in it: one thing to read, one thing
-     to edit. It is also the one block the renderer would misread on its own --
-     handed a slice with no trailing newline, splitFm sees two rules and a
-     paragraph -- so drawLive() writes it out itself. */
-  if (lines[0] === "---"){
-    let k = 1;
-    while (k < lines.length && lines[k] !== "---") k++;
-    if (k < lines.length){ out.push({a: 0, b: k + 1, kind: "fm"}); i = k + 1; }
-  }
-
-  const depths = [];             /* the open list indents, for nesting */
-  while (i < lines.length){
-    const line = lines[i];
-    if (!line.trim()){ i++; continue; }      /* blank lines belong to no block */
-    /* Anything that is not a list item ends the run, and with it the nesting
-       the next run should start over from. A blank line does not: it is still
-       one list on the page, and the run below agrees. */
-    if (out.length && out[out.length - 1].kind !== "li") depths.length = 0;
-    const a = i;
-
-    if (FENCE_RE.test(line)){
-      i++;
-      while (i < lines.length && !FENCE_RE.test(lines[i])) i++;
-      out.push({a: a, b: Math.min(i + 1, lines.length), kind: "code"});
-      i++;
-      continue;
-    }
-    if (/^>/.test(line)){                    /* blockquotes and callouts alike */
-      while (i < lines.length && /^>/.test(lines[i])) i++;
-      out.push({a: a, b: i, kind: "quote"});
-      continue;
-    }
-    if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])){
-      i += 2;
-      while (i < lines.length && /^\s*\|/.test(lines[i])) i++;
-      out.push({a: a, b: i, kind: "table"});
-      continue;
-    }
-    if (HEAD_RE.test(line)){
-      out.push({a: a, b: a + 1, kind: "h" + line.match(HEAD_RE)[1].length});
-      i++;
-      continue;
-    }
-    if (RULE_RE.test(line)){ out.push({a: a, b: a + 1, kind: "hr"}); i++; continue; }
-    if (LIST_RE.test(line)){
-      const m = line.match(/^(\s*)([-*+]|\d+\.)\s+/);
-      const indent = m[1].replace(/\t/g, "    ").length;
-      /* Depth the way render() finds it -- the open indents are a stack --
-         but carried across the run here, because each item is its own block
-         and a nested one rendered alone has nothing left to indent it. */
-      while (depths.length && indent < depths[depths.length - 1]) depths.pop();
-      if (!depths.length || indent > depths[depths.length - 1]) depths.push(indent);
-      i++;
-      /* What continues this item: the lines indented past its marker, and a
-         fenced block among them taken whole — stopping at the first blank
-         line inside one left the rest of the code and its closing fence in a
-         block of their own, which is a block that cannot be read, rendered or
-         edited as what it is. A nested item is not a continuation: it is the
-         next block, at its own depth. */
-      while (i < lines.length){
-        if (!lines[i].trim()){
-          let k = i;
-          while (k < lines.length && !lines[k].trim()) k++;
-          if (k >= lines.length || LIST_RE.test(lines[k]) || !CONT_RE.test(lines[k])) break;
-          i = k;
-          continue;
-        }
-        if (LIST_RE.test(lines[i]) || !CONT_RE.test(lines[i])) break;
-        if (FENCE_ANY.test(lines[i])){
-          i++;
-          while (i < lines.length && !FENCE_ANY.test(lines[i])) i++;
-          i = Math.min(i + 1, lines.length);
-          continue;
-        }
-        i++;
-      }
-      out.push({a: a, b: i, kind: "li", ordered: /\d/.test(m[2]),
-                /* The number it was written with, which is where its run
-                   starts counting. */
-                num: /\d/.test(m[2]) ? parseInt(m[2], 10) : null,
-                depth: depths.length - 1});
-      continue;
-    }
-    while (i < lines.length && lines[i].trim() && !FENCE_RE.test(lines[i])
-           && !/^>/.test(lines[i]) && !HEAD_RE.test(lines[i])
-           && !LIST_RE.test(lines[i]) && !RULE_RE.test(lines[i])) i++;
-    out.push({a: a, b: i, kind: "p"});
-  }
-
-  /* An empty note has no blocks and so nothing to click on. Give it one. */
-  if (!out.length) out.push({a: Math.max(0, lines.length - 1), b: lines.length, kind: "p"});
-  return out;
-}
-
-function grow(ta){
-  ta.style.height = "auto";
-  ta.style.height = ta.scrollHeight + "px";
-}
-
-function drawLive(){
-  dropSurfacesIn(liveEl);
-  liveEl.innerHTML = "";
-  if (!current) return;
-  BLOCKS = blocksOf(edEl.value);
-  if (BLOCK_AT !== null && BLOCK_AT >= BLOCKS.length) BLOCK_AT = null;
-  const lines = edEl.value.split("\n");
-  /* One ctx for the whole note, not one per block: the task boxes number
-     themselves off it, and toggleTask counts them across the whole body. */
-  const c1 = ctx();
-  let ordinal = 0;
-  const counts = [];             /* the running number at each nesting depth */
-
-  BLOCKS.forEach((blk, i) => {
-    const text = lines.slice(blk.a, blk.b).join("\n");
-    const runs = blk.kind === "li";
-    const before = runs && i > 0 && BLOCKS[i - 1].kind === "li";
-    const after  = runs && i + 1 < BLOCKS.length && BLOCKS[i + 1].kind === "li";
-    /* Numbering restarts where the numbers do, and it counts per depth:
-       coming back up from a nested list resumes the number it left off at,
-       and going down starts again at one. Bullets are part of the same run
-       for spacing and no part of it for counting. */
-    const depth = runs ? (blk.depth || 0) : 0;
-    if (runs){
-      if (!before) counts.length = 0;
-      counts.length = depth + 1;   /* going back up abandons the deeper counts */
-      counts[depth] = blk.ordered
-        ? (typeof counts[depth] === "number" ? counts[depth] + 1 : (blk.num || 1))
-        : undefined;
-      ordinal = blk.ordered ? counts[depth] : 0;
-    } else ordinal = 0;
-
-    if (i === BLOCK_AT){
-      const ta = document.createElement("textarea");
-      ta.className = "raw" + (blk.kind === "p" ? "" : " " + blk.kind);
-      if (runs) ta.style.setProperty("--d", depth);
-      ta.spellcheck = false;
-      ta.value = text;
-      liveEl.appendChild(ta);
-      grow(ta);
-      return;
-    }
-
-    const div = document.createElement("div");
-    div.className = "blk" + (runs ? " li" : "");
-    div.dataset.i = i;
-    if (runs){
-      div.dataset.run = before && after ? "mid" : before ? "end" : after ? "start" : "solo";
-      div.style.setProperty("--d", depth);
-    }
-
-    if (!text.trim()){
-      div.innerHTML = '<p class="hint">This note is empty — click here to start writing.</p>';
-    } else if (blk.kind === "fm"){
-      div.innerHTML = '<div class="fm">'
-        + esc(text.replace(/^---\n?/, "").replace(/\n?---$/, "").trim()) + "</div>";
-    } else {
-      div.innerHTML = render(text, c1, blk.a);
-      /* Every item is its own one-item list, so an <ol> would start over at 1
-         each time. The number comes from where the item sits in its run. */
-      if (blk.ordered){
-        const ol = div.querySelector("ol");
-        if (ol) ol.start = ordinal;
-      }
-    }
-    liveEl.appendChild(div);
-  });
-  hydrate(liveEl);
-}
-
-/* Where in the raw markdown a click on the rendered text landed.
-
-   The two strings differ by exactly the markup, so walking them together and
-   skipping what produced no visible character gets there. It is an
-   approximation -- a click inside a wikilink's own brackets can land a
-   character or two out -- and it only has to put the caret near enough that
-   the next thing you do is type, not hunt. */
-function rawOffset(raw, want){
-  if (want == null) return raw.length;
-  if (want <= 0) return 0;
-  let i = 0, seen = 0, bol = true;
-  while (i < raw.length && seen < want){
-    const rest = raw.slice(i);
-    if (bol){
-      bol = false;
-      const lead = rest.match(/^(\s*(?:[-*+]|\d+\.)\s+(?:\[[ xX]\]\s+)?|#{1,6}\s+|>\s?|```\S*|\|)/);
-      if (lead){ i += lead[0].length; continue; }
-    }
-    if (raw[i] === "\n"){ i++; bol = true; continue; }   /* a <br> is no character */
-
-    const em = rest.match(/^(\*\*|~~|`|\*)/);
-    if (em){ i += em[0].length; continue; }
-
-    const wiki = rest.match(/^\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/);
-    if (wiki){
-      const shown = wiki[2] != null ? wiki[2] : wiki[1];
-      const head = wiki[2] != null ? 3 + wiki[1].length : 2;
-      const take = Math.min(shown.length, want - seen);
-      seen += take;
-      i += head + take;
-      if (seen >= want) return i;
-      i += (shown.length - take) + 2;
-      continue;
-    }
-    const link = rest.match(/^\[([^\]]*)\]\([^)]*\)/);
-    if (link){
-      const take = Math.min(link[1].length, want - seen);
-      seen += take;
-      i += 1 + take;
-      if (seen >= want) return i;
-      i += (link[1].length - take) + (link[0].length - link[1].length - 1);
-      continue;
-    }
-    i++;
-    seen++;
-  }
-  return i;
-}
-
-/* How far into the block's rendered text a point is. */
-function pointOffset(el, x, y){
-  let node = null, at = 0;
-  if (document.caretRangeFromPoint){
-    const r = document.caretRangeFromPoint(x, y);
-    if (r){ node = r.startContainer; at = r.startOffset; }
-  } else if (document.caretPositionFromPoint){
-    const r = document.caretPositionFromPoint(x, y);
-    if (r){ node = r.offsetNode; at = r.offset; }
-  }
-  if (!node || node.nodeType !== 3 || !el.contains(node)) return null;
-  let seen = 0;
-  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  let t;
-  while ((t = walk.nextNode())){
-    if (t === node) return seen + at;
-    seen += t.nodeValue.length;
-  }
-  return null;
-}
-
-function blockText(i){
-  return edEl.value.split("\n").slice(BLOCKS[i].a, BLOCKS[i].b).join("\n");
-}
-
-function activate(i, at){
-  if (i == null || i < 0 || i >= BLOCKS.length) return;
-  BLOCK_AT = i;
-  drawLive();
-  const ta = liveEl.querySelector("textarea.raw");
-  if (!ta) return;
-  ta.focus();
-  const pos = Math.max(0, Math.min(at == null ? ta.value.length : at, ta.value.length));
-  ta.setSelectionRange(pos, pos);
-}
-
-function deactivate(){
-  if (BLOCK_AT === null) return;
-  BLOCK_AT = null;
-  drawLive();
-}
-
-/* Splice the block being edited back into the note. Everything below it moves
-   by however many lines it just gained or lost. */
-function liveEdit(ta){
-  const blk = BLOCKS[BLOCK_AT];
-  if (!blk) return;
-  const lines = edEl.value.split("\n");
-  const mine = ta.value.split("\n");
-  edEl.value = lines.slice(0, blk.a).concat(mine, lines.slice(blk.b)).join("\n");
-  const delta = (blk.a + mine.length) - blk.b;
-  blk.b += delta;
-  for (let j = BLOCK_AT + 1; j < BLOCKS.length; j++){ BLOCKS[j].a += delta; BLOCKS[j].b += delta; }
-  grow(ta);
-  if (!dirty) setDirty(true);
-  drawOutline();
-  drawStats();
-  mapS.paint();
-}
-
-liveEl.addEventListener("pointerdown", e => {
-  if (e.target.closest("textarea.raw")) return;      /* it already has the caret */
-  if (e.target.closest("a[href]")) return;           /* a real link is a link */
-  if (e.target.closest("canvas[data-task],button[data-cb]")) return;
-  const div = e.target.closest(".blk");
-  if (!div) return;
-  /* Taking the default stops the browser moving focus for us, which is the
-     whole trick: no blur fires, so the block being left does not redraw out
-     from under the click that is choosing the next one. */
-  e.preventDefault();
-  const i = +div.dataset.i;
-  activate(i, rawOffset(blockText(i), pointOffset(div, e.clientX, e.clientY)));
-});
-
-liveEl.addEventListener("click", e => {
-  const a = e.target.closest("a.wl[data-open]");
-  if (a){
-    if (!plainClick(e)) return;
-    e.preventDefault();
-    return open_(a.dataset.open);
-  }
-  const b = e.target.closest("button[data-cb]");
-  if (b) codeAction(b);
-});
-
-liveEl.addEventListener("input", e => {
-  if (e.target.classList.contains("raw")) liveEdit(e.target);
-});
-
-liveEl.addEventListener("focusout", e => {
-  if (!e.target.classList.contains("raw")) return;
-  /* Only when the focus actually left the pane -- inside it, the pointerdown
-     above has already chosen the next block. */
-  setTimeout(() => {
-    if (BLOCK_AT !== null && !liveEl.contains(document.activeElement)) deactivate();
-  }, 0);
-});
-
-liveEl.addEventListener("keydown", e => {
-  const ta = e.target;
-  if (!ta.classList || !ta.classList.contains("raw")) return;
-  if (e.key === "Escape"){ e.preventDefault(); return deactivate(); }
-  if (e.key === "Tab"){
-    e.preventDefault();
-    const a = ta.selectionStart, b = ta.selectionEnd;
-    ta.value = ta.value.slice(0, a) + "  " + ta.value.slice(b);
-    ta.setSelectionRange(a + 2, a + 2);
-    return liveEdit(ta);
-  }
-  /* Off the top or the bottom of a block and into the next one, so the caret
-     walks the note the way it would in a plain editor. */
-  if (e.key === "ArrowUp" && !ta.value.slice(0, ta.selectionStart).includes("\n")){
-    e.preventDefault();
-    return activate(BLOCK_AT - 1, null);
-  }
-  if (e.key === "ArrowDown" && !ta.value.slice(ta.selectionEnd).includes("\n")){
-    e.preventDefault();
-    return activate(BLOCK_AT + 1, 0);
-  }
-});
 
 /* Flip the nth `- [ ]` in the source. Fenced code and the frontmatter are
    skipped so the count lines up with what the renderer made a box for.  */
@@ -2705,10 +2330,9 @@ function open_(path, how){
     crumbEl.appendChild(s);
   });
   edEl.scrollTop = 0;
-  BLOCK_AT = null;
+  followLine = null;
   preview();
   $("viewWrap").scrollTop = 0;
-  $("liveWrap").scrollTop = 0;
   setDirty(false);
   setStatus("", "");
   drawStats();
@@ -2760,7 +2384,7 @@ async function save(auto){
     setStatus((auto ? "autosaved" : "saved")
             + (r.merged ? " · merged with the vault" : "")
             + (r.commit ? " · " + r.commit : ""), "saved");
-    keepCaret(preview);
+    preview();
     drawStats();
     mapS.paint();
     if (onHist()) loadHistory(true);
@@ -2825,22 +2449,6 @@ function showRefusal(text){
 
 const AUTO_IDLE = 5000, AUTO_GAP = 20000;
 let AUTO = false, autoTimer = null, autoLast = 0, autoHeld = false;
-
-/* Saving re-renders the note, and in live mode a re-render rebuilds the very
-   block the caret sits in. That is a blink when a person pressed Save and
-   intolerable when a timer did, so the caret is put back where it was. */
-function keepCaret(fn){
-  const ta = liveEl.querySelector("textarea.raw");
-  const at = (ta && document.activeElement === ta) ? ta.selectionStart : null;
-  const to = ta ? ta.selectionEnd : null;
-  const was = BLOCK_AT;
-  fn();
-  if (at === null || BLOCK_AT !== was) return;
-  const back = liveEl.querySelector("textarea.raw");
-  if (!back) return;
-  back.focus();
-  try { back.setSelectionRange(at, to); } catch (e) {}
-}
 
 function cancelAuto(){
   if (autoTimer) clearTimeout(autoTimer);
@@ -3094,11 +2702,7 @@ function afterPull(what, keepDirty){
 
 /* Put new text in the textarea without throwing away where the reader was.
    The caret keeps its place in whatever is unchanged around the edit, which
-   is what makes someone else's paragraph arriving mid-sentence bearable.
-
-   Not keepCaret(), which is a different job on a different element: that one
-   puts the caret back into live mode's block after a re-render, and having
-   two functions of that name in one file cost an afternoon. */
+   is what makes someone else's paragraph arriving mid-sentence bearable. */
 function spliceText(next){
   if (edEl.value === next) return;
   const was = edEl.value, at = edEl.selectionStart, to = edEl.selectionEnd;
@@ -4754,7 +4358,6 @@ $("outBody").addEventListener("click", e => {
   if (j) gotoLine(+j.dataset.line);
 });
 $("viewWrap").addEventListener("scroll", spy, {passive: true});
-$("liveWrap").addEventListener("scroll", spy, {passive: true});
 listEl.addEventListener("keydown", e => {
   /* The menu key and Shift-F10, which is how a context menu is opened without
      a mouse. Anchored to the row rather than to the pointer, because there is
@@ -4792,7 +4395,10 @@ edEl.addEventListener("input", () => {
   preview();
   drawStats();
   mapS.paint();
+  followCaret();
 });
+edEl.addEventListener("keyup", followCaret);
+edEl.addEventListener("click", followCaret);
 edEl.addEventListener("keydown", e => {
   if (e.key === "Tab"){
     e.preventDefault();
@@ -4920,15 +4526,17 @@ window.addEventListener("beforeunload", e => {
 
 (async function(){
   readPalette();
-  let saved = null, split = null, m = null, auto = null;
+  let saved = null, split = null, splitdir = null, m = null, auto = null;
   try {
     auto = localStorage.getItem("cairn-autosave");
     saved = localStorage.getItem("cairn-theme");
     split = localStorage.getItem("cairn-split");
+    splitdir = localStorage.getItem("cairn-splitdir");
     m = localStorage.getItem("cairn-mode") || localStorage.getItem("notes-mode");
   } catch (e) {}
   applyTheme(saved || "auto");
   setAuto(auto === "on", false);
+  setSplitDir(splitdir === "v" ? "v" : "h");
   if (split) setSplit(parseFloat(split)); else setSplit(50);
   restorePanels();
   setMode(m && MODES.some(x => x[0] === m) ? m : "split", false);
